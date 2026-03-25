@@ -1,6 +1,7 @@
 import os
 import base64
 import sys
+import subprocess
 import pandas as pd
 import streamlit as st
 
@@ -99,6 +100,17 @@ def cached_dashboard_data(
 
 def clear_all_caches():
     cached_dashboard_data.clear()
+
+
+def _get_git_commit_hash() -> str:
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=os.path.dirname(os.path.abspath(__file__)),
+            text=True,
+        ).strip()
+    except Exception:
+        return "unknown"
 
 
 def _load_dashboard_debug_samples(project_id: int) -> dict[str, pd.DataFrame | int]:
@@ -245,6 +257,31 @@ def _get_runtime_versions() -> dict[str, str]:
     except Exception as exc:
         versions["sqlalchemy"] = f"missing: {exc}"
     return versions
+
+
+def render_debug_build_banner():
+    commit_hash = _get_git_commit_hash()
+    st.markdown(
+        f"""
+        <div style="
+            background:#fff4d6;
+            border:2px solid #f59e0b;
+            color:#7c2d12;
+            padding:0.8rem 1rem;
+            border-radius:0.75rem;
+            margin-bottom:1rem;
+            font-weight:700;
+        ">
+            DEBUG BUILD ACTIVE | commit: {commit_hash}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+# Always show an unmissable plain-text debug marker near the top of the app.
+render_debug_build_banner()
+st.text(f"DEBUG BUILD ACTIVE | commit: {_get_git_commit_hash()}")
 
 
 # =========================================================
@@ -1296,6 +1333,7 @@ def render_dashboard():
     with st.container():
         st.markdown('<div class="dashboard-filters-shell">', unsafe_allow_html=True)
         st.markdown('<div class="dashboard-filters-title">Dashboard Filters</div>', unsafe_allow_html=True)
+        st.text(f"DASHBOARD DEBUG VISIBLE | commit: {_get_git_commit_hash()}")
         f1, f2, f3, f4 = st.columns(4)
 
         with f1:
@@ -1445,38 +1483,49 @@ def render_dashboard():
         selected_publish_month=selected_publish_month_value,
     )
 
-    with st.expander("Dashboard Debug", expanded=False):
-        debug_samples = _load_dashboard_debug_samples(int(project["project_id"]))
-        st.write({"runtime_versions": _get_runtime_versions()})
-        debug_counts_df = pd.DataFrame(
-            [
-                {"stage": "raw_presence_records_for_project", "rows": debug_samples["raw_presence_count"]},
-                {"stage": "raw_source_records_for_project", "rows": debug_samples["raw_source_count"]},
-                {"stage": "dashboard_joined_presence_rows", "rows": len(presence_enriched)},
-                {"stage": "dashboard_joined_source_rows", "rows": len(source_enriched)},
-                {"stage": "after_common_filters_presence_rows", "rows": len(filtered["presence_records"])},
-                {"stage": "after_common_filters_source_rows", "rows": len(filtered["source_records"])},
-                {"stage": "queries_after_dashboard_filters", "rows": len(queries_filtered)},
-                {"stage": "final_presence_rows_used_for_payload", "rows": len(presence_filtered)},
-                {"stage": "final_source_rows_used_for_payload", "rows": len(source_filtered)},
-            ]
-        )
-        st.dataframe(debug_counts_df, use_container_width=True, hide_index=True)
+    st.markdown("### Dashboard Debug")
+    debug_samples = _load_dashboard_debug_samples(int(project["project_id"]))
+    st.write(
+        {
+            "runtime_versions": _get_runtime_versions(),
+            "git_commit": _get_git_commit_hash(),
+        }
+    )
+    debug_counts_df = pd.DataFrame(
+        [
+            {"stage": "raw_presence_records_for_project", "rows": debug_samples["raw_presence_count"]},
+            {"stage": "raw_source_records_for_project", "rows": debug_samples["raw_source_count"]},
+            {"stage": "dashboard_joined_presence_rows", "rows": len(presence_enriched)},
+            {"stage": "dashboard_joined_source_rows", "rows": len(source_enriched)},
+            {"stage": "after_common_filters_presence_rows", "rows": len(filtered["presence_records"])},
+            {"stage": "after_common_filters_source_rows", "rows": len(filtered["source_records"])},
+            {"stage": "queries_after_dashboard_filters", "rows": len(queries_filtered)},
+            {"stage": "final_presence_rows_used_for_payload", "rows": len(presence_filtered)},
+            {"stage": "final_source_rows_used_for_payload", "rows": len(source_filtered)},
+        ]
+    )
+    st.dataframe(debug_counts_df, use_container_width=True, hide_index=True)
 
-        if not debug_samples["imported_query_numbers"].empty:
-            st.caption("Imported Excel query numbers and query_master linkage")
-            st.dataframe(debug_samples["imported_query_numbers"], use_container_width=True, hide_index=True)
+    if not debug_samples["imported_query_numbers"].empty:
+        st.caption("Imported Excel query numbers and query_master linkage")
+        st.dataframe(debug_samples["imported_query_numbers"], use_container_width=True, hide_index=True)
+    else:
+        st.info("No Excel-uploaded query numbers found for this project yet.")
 
-        distinct_imported_queries = debug_samples["imported_query_numbers"]["query_number"].tolist() if not debug_samples["imported_query_numbers"].empty else []
-        st.write({"distinct_uploaded_query_numbers": distinct_imported_queries})
+    distinct_imported_queries = debug_samples["imported_query_numbers"]["query_number"].tolist() if not debug_samples["imported_query_numbers"].empty else []
+    st.write({"distinct_uploaded_query_numbers": distinct_imported_queries})
 
-        if not debug_samples["manual_presence_sample"].empty:
-            st.caption("Manual-entry presence sample")
-            st.dataframe(debug_samples["manual_presence_sample"], use_container_width=True, hide_index=True)
+    if not debug_samples["manual_presence_sample"].empty:
+        st.caption("Manual-entry presence sample")
+        st.dataframe(debug_samples["manual_presence_sample"], use_container_width=True, hide_index=True)
+    else:
+        st.info("No manual-entry presence sample found for this project.")
 
-        if not debug_samples["imported_presence_sample"].empty:
-            st.caption("Excel-upload presence sample")
-            st.dataframe(debug_samples["imported_presence_sample"], use_container_width=True, hide_index=True)
+    if not debug_samples["imported_presence_sample"].empty:
+        st.caption("Excel-upload presence sample")
+        st.dataframe(debug_samples["imported_presence_sample"], use_container_width=True, hide_index=True)
+    else:
+        st.info("No Excel-upload presence sample found for this project.")
 
     kpis = payload["kpis"]
 
