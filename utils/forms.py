@@ -1,3 +1,5 @@
+import time
+
 import pandas as pd
 import streamlit as st
 
@@ -42,6 +44,8 @@ from utils.db import (
     # raw master data
     get_all_presence_records,
     get_all_source_records,
+    get_presence_records_count,
+    get_source_records_count,
     bulk_delete_presence_records,
     bulk_delete_source_records,
 )
@@ -129,6 +133,11 @@ def _current_project_id() -> int | None:
     return int(project_id)
 
 
+@st.cache_data(show_spinner=False)
+def _cached_queries_for_form(project_id: int, active_only: bool):
+    return get_all_queries(project_id=project_id, active_only=active_only)
+
+
 def _set_monthly_import_feedback(message_type: str, message: str):
     st.session_state.monthly_import_result_type = message_type
     st.session_state.monthly_import_result_message = message
@@ -146,6 +155,15 @@ def _render_monthly_import_feedback():
         st.warning(message)
     else:
         st.info(message)
+
+
+def _log_form_perf(label: str, start_time: float, **metrics):
+    elapsed = time.perf_counter() - start_time
+    suffix = " ".join(f"{key}={value}" for key, value in metrics.items() if value is not None)
+    message = f"[form-perf] {label} elapsed={elapsed:.3f}s"
+    if suffix:
+        message = f"{message} {suffix}"
+    print(message, flush=True)
 
 
 def _normalize_editor_df(df: pd.DataFrame, columns: list[str], defaults: dict) -> pd.DataFrame:
@@ -574,6 +592,7 @@ def _render_source_records_table():
 # Data Entry Page
 # =========================================================
 def render_manual_entry():
+    manual_entry_start = time.perf_counter()
     st.subheader("Manual Entry")
     st.caption("Record monthly presence and source results based on existing Query Master.")
 
@@ -584,7 +603,7 @@ def render_manual_entry():
         st.info("Please select a project first.")
         return
 
-    queries_df = get_all_queries(project_id=project_id, active_only=True)
+    queries_df = _cached_queries_for_form(project_id=project_id, active_only=True)
     if queries_df.empty:
         st.info("No active query is available. Please create Query Master first in Data Record.")
         return
@@ -719,6 +738,8 @@ def render_manual_entry():
         except Exception as e:
             st.error(f"Failed to save submission: {e}")
 
+    _log_form_perf("manual entry render", manual_entry_start, project_id=int(project_id), active_queries=len(queries_df))
+
 
 def render_excel_upload():
     st.subheader("Excel Upload")
@@ -793,17 +814,25 @@ def render_excel_upload():
 
 
 def render_data_entry_page():
-    tab1, tab2 = st.tabs(["Manual Entry", "Excel Upload"])
-    with tab1:
-        render_manual_entry()
-    with tab2:
+    section = st.segmented_control(
+        "Data Entry Section",
+        options=["Manual Entry", "Excel Upload"],
+        default=st.session_state.get("data_entry_section", "Manual Entry"),
+        key="data_entry_section",
+        selection_mode="single",
+    )
+
+    if section == "Excel Upload":
         render_excel_upload()
+    else:
+        render_manual_entry()
 
 
 # =========================================================
 # Data Record - Query Master
 # =========================================================
 def render_query_master_manager():
+    query_master_start = time.perf_counter()
     st.subheader("Query Master")
     project_id = _current_project_id()
     if project_id is None:
@@ -816,6 +845,7 @@ def render_query_master_manager():
         if uploaded_qm is not None and st.button("Import Query Master Excel", use_container_width=True, key="import_query_master_btn"):
             try:
                 result = import_query_master_excel(uploaded_qm, project_id=project_id)
+                _cached_queries_for_form.clear()
                 st.success(
                     f"Query Master import successful. "
                     f"Inserted: {result['query_master']}, "
@@ -867,13 +897,14 @@ def render_query_master_manager():
                         publish_month_default=publish_month_default,
                         active=int(active),
                     )
+                    _cached_queries_for_form.clear()
                     st.success("Query Master saved.")
                     st.rerun()
             except Exception as e:
                 st.error(f"Failed to save Query Master: {e}")
 
     st.markdown("### Current Query Master")
-    queries_df = get_all_queries(project_id=project_id, active_only=False)
+    queries_df = _cached_queries_for_form(project_id=project_id, active_only=False)
     if queries_df.empty:
         st.info("No query master records yet.")
     else:
@@ -930,6 +961,7 @@ def render_query_master_manager():
                                     query_numbers=selected_query_numbers,
                                 )
                                 st.session_state.show_delete_query_master_confirm = False
+                                _cached_queries_for_form.clear()
                                 st.success(f"Successfully deleted {deleted_count} query record(s).")
                                 st.rerun()
                             except Exception as e:
@@ -1028,6 +1060,7 @@ def render_query_master_manager():
                                 st.error("Please choose at least one field to update.")
                             else:
                                 bulk_update_query_master(selected_query_numbers, update_fields, project_id=project_id)
+                                _cached_queries_for_form.clear()
                                 st.success("Selected Query Master rows updated.")
                                 st.rerun()
 
@@ -1059,16 +1092,20 @@ def render_query_master_manager():
             if st.button("Update Query Status", use_container_width=True):
                 try:
                     set_query_active(selected_query, target_active, project_id=project_id)
+                    _cached_queries_for_form.clear()
                     st.success("Query status updated.")
                     st.rerun()
                 except Exception as e:
                     st.error(f"Failed to update query status: {e}")
+
+    _log_form_perf("query master render", query_master_start, project_id=int(project_id), rows=len(queries_df))
 
 
 # =========================================================
 # Data Record - Entity Mapping
 # =========================================================
 def render_entity_mapping_manager():
+    entity_mapping_start = time.perf_counter()
     st.subheader("Entity Mapping")
     project_id = _current_project_id()
     if project_id is None:
@@ -1164,11 +1201,14 @@ def render_entity_mapping_manager():
                     st.session_state.show_delete_entity_mapping_confirm = False
                     st.rerun()
 
+    _log_form_perf("entity mapping render", entity_mapping_start, project_id=int(project_id), rows=len(mapping_df))
+
 
 # =========================================================
 # Data Record - Source Mapping
 # =========================================================
 def render_source_mapping_manager():
+    source_mapping_start = time.perf_counter()
     st.subheader("Source Mapping")
     project_id = _current_project_id()
     if project_id is None:
@@ -1264,11 +1304,14 @@ def render_source_mapping_manager():
                     st.session_state.show_delete_source_mapping_confirm = False
                     st.rerun()
 
+    _log_form_perf("source mapping render", source_mapping_start, project_id=int(project_id), rows=len(mapping_df))
+
 
 # =========================================================
 # Data Record - Submission Manager
 # =========================================================
 def render_submission_manager():
+    submission_manager_start = time.perf_counter()
     st.subheader("Submission Manager")
     project_id = _current_project_id()
     if project_id is None:
@@ -1276,6 +1319,7 @@ def render_submission_manager():
         return
 
     submissions_df = get_all_submissions(project_id=project_id)
+    _log_form_perf("submission manager load", submission_manager_start, project_id=int(project_id), rows=len(submissions_df))
     if submissions_df.empty:
         st.info("No submissions yet.")
         return
@@ -1313,6 +1357,7 @@ def render_submission_manager():
 # Data Record - Raw Data / Master Tables
 # =========================================================
 def render_raw_records():
+    raw_records_start = time.perf_counter()
     st.subheader("Raw Data")
     st.caption("This section is the consolidated master table of all Excel uploads and manual entries.")
     project_id = _current_project_id()
@@ -1320,15 +1365,99 @@ def render_raw_records():
         st.info("Please select a project first.")
         return
 
-    presence_df = get_all_presence_records(project_id=project_id)
-    source_df = get_all_source_records(project_id=project_id)
+    if st.session_state.get("raw_data_section") not in {"Presence Master Table", "Source Master Table"}:
+        st.session_state.raw_data_section = "Presence Master Table"
 
-    tab1, tab2 = st.tabs(["Presence Master Table", "Source Master Table"])
+    print(f"[form-state] raw data section before rerun section={st.session_state.get('raw_data_section')} project_id={int(project_id)}", flush=True)
+    raw_section = st.segmented_control(
+        "Raw Data Section",
+        options=["Presence Master Table", "Source Master Table"],
+        key="raw_data_section",
+        selection_mode="single",
+    )
+    raw_section = raw_section or st.session_state.get("raw_data_section", "Presence Master Table")
+    print(f"[form-state] raw data section after rerun section={st.session_state.get('raw_data_section')} widget={raw_section} project_id={int(project_id)}", flush=True)
 
-    with tab1:
+    page_size = st.selectbox(
+        "Rows Per Page",
+        options=[50, 100, 200],
+        index=1,
+        key="raw_data_page_size",
+    )
+
+    presence_rows = 0
+    source_rows = 0
+
+    if raw_section == "Source Master Table":
+        total_rows = get_source_records_count(project_id=project_id)
+        source_rows = total_rows
+        total_pages = max(1, (total_rows + page_size - 1) // page_size)
+        page_number = st.number_input(
+            "Source Page",
+            min_value=1,
+            max_value=total_pages,
+            value=min(int(st.session_state.get("raw_source_page_number", 1)), total_pages),
+            step=1,
+            key="raw_source_page_number",
+        )
+        offset = (int(page_number) - 1) * int(page_size)
+        print(f"[form-perf] source raw rows before render total_rows={total_rows} page_size={page_size} page={int(page_number)}", flush=True)
+        source_df = get_all_source_records(project_id=project_id, limit=int(page_size), offset=offset)
+        if source_df.empty:
+            st.info("No source data yet.")
+        else:
+            st.caption(f"Showing {len(source_df)} of {total_rows} source rows")
+            s_display = source_df.copy()
+            s_display.insert(0, "selected", False)
+
+            s_edited = st.data_editor(
+                s_display,
+                use_container_width=True,
+                hide_index=True,
+                key="source_raw_editor",
+                column_config={
+                    "selected": st.column_config.CheckboxColumn("Select"),
+                    "id": st.column_config.NumberColumn("ID", disabled=True),
+                },
+                disabled=[col for col in s_display.columns if col != "selected"],
+            )
+
+            selected_rows = s_edited[s_edited["selected"] == True].copy()
+            selected_ids = selected_rows["id"].tolist() if not selected_rows.empty else []
+
+            if st.button(
+                "Delete Selected Source Rows",
+                use_container_width=True,
+                key="delete_source_rows",
+            ):
+                if not selected_ids:
+                    st.error("Please select at least one source row.")
+                else:
+                    try:
+                        bulk_delete_source_records(selected_ids)
+                        st.success("Selected source rows deleted.")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Failed to delete source rows: {e}")
+    else:
+        total_rows = get_presence_records_count(project_id=project_id)
+        presence_rows = total_rows
+        total_pages = max(1, (total_rows + page_size - 1) // page_size)
+        page_number = st.number_input(
+            "Presence Page",
+            min_value=1,
+            max_value=total_pages,
+            value=min(int(st.session_state.get("raw_presence_page_number", 1)), total_pages),
+            step=1,
+            key="raw_presence_page_number",
+        )
+        offset = (int(page_number) - 1) * int(page_size)
+        print(f"[form-perf] presence raw rows before render total_rows={total_rows} page_size={page_size} page={int(page_number)}", flush=True)
+        presence_df = get_all_presence_records(project_id=project_id, limit=int(page_size), offset=offset)
         if presence_df.empty:
             st.info("No presence data yet.")
         else:
+            st.caption(f"Showing {len(presence_df)} of {total_rows} presence rows")
             p_display = presence_df.copy()
             p_display.insert(0, "selected", False)
 
@@ -1362,70 +1491,49 @@ def render_raw_records():
                     except Exception as e:
                         st.error(f"Failed to delete presence rows: {e}")
 
-    with tab2:
-        if source_df.empty:
-            st.info("No source data yet.")
-        else:
-            s_display = source_df.copy()
-            s_display.insert(0, "selected", False)
-
-            s_edited = st.data_editor(
-                s_display,
-                use_container_width=True,
-                hide_index=True,
-                key="source_raw_editor",
-                column_config={
-                    "selected": st.column_config.CheckboxColumn("Select"),
-                    "id": st.column_config.NumberColumn("ID", disabled=True),
-                },
-                disabled=[col for col in s_display.columns if col != "selected"],
-            )
-
-            selected_rows = s_edited[s_edited["selected"] == True].copy()
-            selected_ids = selected_rows["id"].tolist() if not selected_rows.empty else []
-
-            if st.button(
-                "Delete Selected Source Rows",
-                use_container_width=True,
-                key="delete_source_rows",
-            ):
-                if not selected_ids:
-                    st.error("Please select at least one source row.")
-                else:
-                    try:
-                        bulk_delete_source_records(selected_ids)
-                        st.success("Selected source rows deleted.")
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Failed to delete source rows: {e}")
+    _log_form_perf("raw records render", raw_records_start, project_id=int(project_id), presence_rows=presence_rows, source_rows=source_rows, section=raw_section, page_size=page_size)
 
 
 def render_data_record_page():
-    tab1, tab2, tab3, tab4, tab5 = st.tabs(
-        [
+    project_id = _current_project_id()
+    if project_id is None:
+        st.info("Please select a project first.")
+        return
+
+    valid_sections = {
+        "Query Master",
+        "Entity Mapping",
+        "Source Mapping",
+        "Submission Manager",
+        "Raw Data",
+    }
+    if st.session_state.get("data_record_section") not in valid_sections:
+        st.session_state.data_record_section = "Query Master"
+
+    print(f"[form-state] data record section before rerun section={st.session_state.get('data_record_section')} project_id={int(project_id)}", flush=True)
+    section = st.segmented_control(
+        "Data Record Section",
+        options=[
             "Query Master",
             "Entity Mapping",
             "Source Mapping",
             "Submission Manager",
             "Raw Data",
-        ]
+        ],
+        key="data_record_section",
+        selection_mode="single",
     )
+    section = section or st.session_state.get("data_record_section", "Query Master")
+    print(f"[form-state] data record section after rerun section={st.session_state.get('data_record_section')} widget={section} project_id={int(project_id)}", flush=True)
+    print(f"[form-perf] data record section selected section={section} project_id={int(project_id)}", flush=True)
 
-    with tab1:
-        render_query_master_manager()
-
-    with tab2:
+    if section == "Entity Mapping":
         render_entity_mapping_manager()
-
-    with tab3:
+    elif section == "Source Mapping":
         render_source_mapping_manager()
-
-    with tab4:
+    elif section == "Submission Manager":
         render_submission_manager()
-
-    with tab5:
+    elif section == "Raw Data":
         render_raw_records()
-    project_id = _current_project_id()
-    if project_id is None:
-        st.info("Please select a project first.")
-        return
+    else:
+        render_query_master_manager()

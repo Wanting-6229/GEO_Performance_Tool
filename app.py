@@ -1,12 +1,12 @@
 import os
 import base64
+import time
 import pandas as pd
 import streamlit as st
+import utils.db as db_module
 
 from utils.db import (
     create_tables,
-    log_backend_selection_once,
-    log_schema_initialization_complete,
     create_project,
     rename_project,
     delete_project_cascade,
@@ -47,9 +47,25 @@ st.set_page_config(
 # =========================================================
 # Initial Setup
 # =========================================================
-log_backend_selection_once()
-create_tables()
-log_schema_initialization_complete()
+def _log_perf(label: str, start_time: float, **metrics):
+    elapsed = time.perf_counter() - start_time
+    suffix = " ".join(f"{key}={value}" for key, value in metrics.items() if value is not None)
+    message = f"[perf] {label} elapsed={elapsed:.3f}s"
+    if suffix:
+        message = f"{message} {suffix}"
+    print(message, flush=True)
+
+
+@st.cache_resource(show_spinner=False)
+def initialize_database_once():
+    start = time.perf_counter()
+    create_tables()
+    _log_perf("database initialization", start, backend=db_module.get_db_backend())
+    getattr(db_module, "log_final_backend_selection", lambda: None)()
+    return True
+
+
+initialize_database_once()
 
 if "page" not in st.session_state:
     st.session_state.page = "Projects"
@@ -72,6 +88,15 @@ if "show_delete_project_panel" not in st.session_state:
 if "project_dialog_target" not in st.session_state:
     st.session_state.project_dialog_target = None
 
+if "data_record_section" not in st.session_state:
+    st.session_state.data_record_section = "Query Master"
+
+if "raw_data_section" not in st.session_state:
+    st.session_state.raw_data_section = "Presence Master Table"
+
+if "data_entry_section" not in st.session_state:
+    st.session_state.data_entry_section = "Manual Entry"
+
 
 # =========================================================
 # Constants
@@ -92,6 +117,7 @@ MONTHS = [
 def cached_dashboard_data(
     project_id: int,
     query_status_filter: str = "active_only",
+    project_updated_at: str = "",
 ):
     return load_dashboard_ready_data(
         project_id=project_id,
@@ -566,6 +592,7 @@ def set_current_project(project_id: int, project_name: str):
     st.session_state.current_project_id = int(project_id)
     st.session_state.current_project_name = project_name
     st.session_state.page = "Dashboard"
+    st.session_state.project_enter_started_at = time.perf_counter()
 
 
 def clear_current_project():
@@ -1137,6 +1164,7 @@ def render_projects_page():
 # Dashboard
 # =========================================================
 def render_dashboard():
+    dashboard_render_start = time.perf_counter()
     if not require_project_selection():
         return
 
@@ -1165,9 +1193,19 @@ def render_dashboard():
                 }[x],
             )
 
+        dashboard_data_start = time.perf_counter()
         dashboard_data = cached_dashboard_data(
             project_id=int(project["project_id"]),
             query_status_filter=query_status_filter,
+            project_updated_at=str(project.get("updated_at", "")),
+        )
+        _log_perf(
+            "dashboard data load",
+            dashboard_data_start,
+            project_id=int(project["project_id"]),
+            queries=len(dashboard_data.get("queries", [])),
+            presence=len(dashboard_data.get("presence_records", [])),
+            source=len(dashboard_data.get("source_records", [])),
         )
 
         queries_df = dashboard_data["queries"]
@@ -1418,18 +1456,37 @@ def render_dashboard():
     chart_card_end()
     section_card_end()
 
-    with st.expander("Filtered Data Preview", expanded=False):
+    show_filtered_preview = st.toggle("Show Filtered Data Preview", value=False, key="dashboard_filtered_preview_toggle")
+    if show_filtered_preview:
         st.markdown("#### Presence Records")
         st.dataframe(presence_filtered, use_container_width=True, hide_index=True)
 
         st.markdown("#### Source Records")
         st.dataframe(source_filtered, use_container_width=True, hide_index=True)
 
+    _log_perf(
+        "dashboard render",
+        dashboard_render_start,
+        project_id=int(project["project_id"]),
+        filtered_presence=len(presence_filtered),
+        filtered_source=len(source_filtered),
+    )
+
+    enter_started_at = st.session_state.pop("project_enter_started_at", None)
+    if enter_started_at is not None:
+        _log_perf(
+            "project enter",
+            enter_started_at,
+            project_id=int(project["project_id"]),
+            page="Dashboard",
+        )
+
 
 # =========================================================
 # Data Entry
 # =========================================================
 def render_data_entry():
+    data_entry_start = time.perf_counter()
     if not require_project_selection():
         return
 
@@ -1441,13 +1498,14 @@ def render_data_entry():
     render_project_context_bar()
     render_top_nav()
     render_data_entry_page()
-    clear_all_caches()
+    _log_perf("data entry render", data_entry_start, project_id=int(st.session_state.get("current_project_id") or 0))
 
 
 # =========================================================
 # Data Record
 # =========================================================
 def render_data_record():
+    data_record_start = time.perf_counter()
     if not require_project_selection():
         return
 
@@ -1459,7 +1517,7 @@ def render_data_record():
     render_project_context_bar()
     render_top_nav()
     render_data_record_page()
-    clear_all_caches()
+    _log_perf("data record render", data_record_start, project_id=int(st.session_state.get("current_project_id") or 0))
 
 
 # =========================================================
