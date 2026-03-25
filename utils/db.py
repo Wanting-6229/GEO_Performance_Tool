@@ -2295,24 +2295,6 @@ def import_monthly_results_excel(uploaded_file, project_id: int):
             delete_submission(submission_id, project_id=project_id)
             raise
 
-    debug_info = {
-        "sheet_names": list(xls.sheet_names),
-        "presence_columns": raw_presence_df.columns.tolist(),
-        "source_columns": raw_source_df.columns.tolist(),
-        "presence_dtypes": {k: str(v) for k, v in raw_presence_df.dtypes.items()},
-        "source_dtypes": {k: str(v) for k, v in raw_source_df.dtypes.items()},
-        "presence_head_raw": raw_presence_df.head(5).astype(str).to_dict(orient="records"),
-        "source_head_raw": raw_source_df.head(5).astype(str).to_dict(orient="records"),
-        "presence_head_normalized": presence_df.head(5).astype(str).to_dict(orient="records"),
-        "source_head_normalized": source_df.head(5).astype(str).to_dict(orient="records"),
-        "distinct_uploaded_query_numbers": sorted(set(presence_df["query_number"].tolist()) | set(source_df["query_number"].tolist())),
-        "distinct_uploaded_created_by": sorted(set(presence_df["created_by"].tolist()) | set(source_df["created_by"].tolist())),
-        "distinct_uploaded_record_month": sorted(set(presence_df["record_month"].tolist()) | set(source_df["record_month"].tolist())),
-        "distinct_uploaded_ai_platform": sorted(set(presence_df["ai_platform"].tolist()) | set(source_df["ai_platform"].tolist())),
-        "inserted_presence_sample": presence_df.head(1).astype(str).to_dict(orient="records"),
-        "inserted_source_sample": source_df.head(1).astype(str).to_dict(orient="records"),
-    }
-
     return {
         "success": True,
         "submissions": created_submissions,
@@ -2324,5 +2306,4 @@ def import_monthly_results_excel(uploaded_file, project_id: int):
         "skipped_duplicate_submissions": skipped_duplicate_submissions,
         "skipped_duplicate_presence_records": skipped_duplicate_presence,
         "skipped_duplicate_source_records": skipped_duplicate_source,
-        "debug_info": debug_info,
     }

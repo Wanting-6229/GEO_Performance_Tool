@@ -1,7 +1,5 @@
 import os
 import base64
-import sys
-import subprocess
 import pandas as pd
 import streamlit as st
 
@@ -13,7 +11,6 @@ from utils.db import (
     list_projects,
     get_project,
     get_project_by_name,
-    get_connection,
     split_publish_months,
 )
 from utils.loader import (
@@ -100,188 +97,6 @@ def cached_dashboard_data(
 
 def clear_all_caches():
     cached_dashboard_data.clear()
-
-
-def _get_git_commit_hash() -> str:
-    try:
-        return subprocess.check_output(
-            ["git", "rev-parse", "--short", "HEAD"],
-            cwd=os.path.dirname(os.path.abspath(__file__)),
-            text=True,
-        ).strip()
-    except Exception:
-        return "unknown"
-
-
-def _load_dashboard_debug_samples(project_id: int) -> dict[str, pd.DataFrame | int]:
-    conn = get_connection()
-    try:
-        raw_presence_count = pd.read_sql_query(
-            """
-            SELECT COUNT(*) AS row_count
-            FROM presence_records p
-            JOIN submission s
-              ON p.submission_id = s.submission_id
-            WHERE s.project_id = ?
-            """,
-            conn,
-            params=[int(project_id)],
-        ).iloc[0]["row_count"]
-
-        raw_source_count = pd.read_sql_query(
-            """
-            SELECT COUNT(*) AS row_count
-            FROM source_records r
-            JOIN submission s
-              ON r.submission_id = s.submission_id
-            WHERE s.project_id = ?
-            """,
-            conn,
-            params=[int(project_id)],
-        ).iloc[0]["row_count"]
-
-        imported_query_numbers = pd.read_sql_query(
-            """
-            SELECT DISTINCT
-                s.query_number,
-                CASE WHEN q.query_number IS NULL THEN 0 ELSE 1 END AS exists_in_query_master,
-                COALESCE(q.active, 0) AS active,
-                COALESCE(q.query_type, '') AS query_type,
-                COALESCE(q.product_category, '') AS product_category,
-                COALESCE(q.publish_month_default, '') AS publish_month_default
-            FROM submission s
-            LEFT JOIN query_master q
-              ON s.project_id = q.project_id
-             AND s.query_number = q.query_number
-            WHERE s.project_id = ?
-              AND s.notes = 'Imported from Excel'
-            ORDER BY s.query_number
-            """,
-            conn,
-            params=[int(project_id)],
-        )
-
-        manual_presence_sample = pd.read_sql_query(
-            """
-            SELECT
-                'manual' AS record_origin,
-                s.submission_id,
-                s.project_id,
-                s.query_number,
-                s.record_month,
-                s.ai_platform,
-                s.check_date AS submission_check_date,
-                s.created_by,
-                s.notes,
-                p.entity_name_cn,
-                p.entity_name_en,
-                p.position,
-                COALESCE(q.query_type, '') AS query_type,
-                COALESCE(q.product_category, '') AS product_category,
-                COALESCE(q.publish_month_default, '') AS publish_month_default,
-                COALESCE(q.active, 0) AS active
-            FROM presence_records p
-            JOIN submission s
-              ON p.submission_id = s.submission_id
-            LEFT JOIN query_master q
-              ON s.project_id = q.project_id
-             AND s.query_number = q.query_number
-            WHERE s.project_id = ?
-              AND COALESCE(s.notes, '') <> 'Imported from Excel'
-            ORDER BY p.id DESC
-            LIMIT 1
-            """,
-            conn,
-            params=[int(project_id)],
-        )
-
-        imported_presence_sample = pd.read_sql_query(
-            """
-            SELECT
-                'excel' AS record_origin,
-                s.submission_id,
-                s.project_id,
-                s.query_number,
-                s.record_month,
-                s.ai_platform,
-                s.check_date AS submission_check_date,
-                s.created_by,
-                s.notes,
-                p.entity_name_cn,
-                p.entity_name_en,
-                p.position,
-                COALESCE(q.query_type, '') AS query_type,
-                COALESCE(q.product_category, '') AS product_category,
-                COALESCE(q.publish_month_default, '') AS publish_month_default,
-                COALESCE(q.active, 0) AS active
-            FROM presence_records p
-            JOIN submission s
-              ON p.submission_id = s.submission_id
-            LEFT JOIN query_master q
-              ON s.project_id = q.project_id
-             AND s.query_number = q.query_number
-            WHERE s.project_id = ?
-              AND s.notes = 'Imported from Excel'
-            ORDER BY p.id DESC
-            LIMIT 1
-            """,
-            conn,
-            params=[int(project_id)],
-        )
-    finally:
-        conn.close()
-
-    return {
-        "raw_presence_count": int(raw_presence_count),
-        "raw_source_count": int(raw_source_count),
-        "imported_query_numbers": imported_query_numbers,
-        "manual_presence_sample": manual_presence_sample,
-        "imported_presence_sample": imported_presence_sample,
-    }
-
-
-def _get_runtime_versions() -> dict[str, str]:
-    versions = {
-        "python": sys.version.split()[0],
-        "pandas": pd.__version__,
-        "sqlite3": __import__("sqlite3").sqlite_version,
-    }
-    try:
-        import openpyxl
-        versions["openpyxl"] = openpyxl.__version__
-    except Exception as exc:
-        versions["openpyxl"] = f"missing: {exc}"
-    try:
-        import sqlalchemy
-        versions["sqlalchemy"] = sqlalchemy.__version__
-    except Exception as exc:
-        versions["sqlalchemy"] = f"missing: {exc}"
-    return versions
-
-
-def render_debug_build_banner():
-    commit_hash = _get_git_commit_hash()
-    st.markdown(
-        f"""
-        <div style="
-            background:#fff4d6;
-            border:2px solid #f59e0b;
-            color:#7c2d12;
-            padding:0.8rem 1rem;
-            border-radius:0.75rem;
-            margin-bottom:1rem;
-            font-weight:700;
-        ">
-            DEBUG BUILD ACTIVE | commit: {commit_hash}
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
-# Always show an unmissable plain-text debug marker near the top of the app.
-render_debug_build_banner()
-st.text(f"DEBUG BUILD ACTIVE | commit: {_get_git_commit_hash()}")
 
 
 # =========================================================
@@ -1333,7 +1148,6 @@ def render_dashboard():
     with st.container():
         st.markdown('<div class="dashboard-filters-shell">', unsafe_allow_html=True)
         st.markdown('<div class="dashboard-filters-title">Dashboard Filters</div>', unsafe_allow_html=True)
-        st.text(f"DASHBOARD DEBUG VISIBLE | commit: {_get_git_commit_hash()}")
         f1, f2, f3, f4 = st.columns(4)
 
         with f1:
@@ -1482,50 +1296,6 @@ def render_dashboard():
         selected_category=visibility_category,
         selected_publish_month=selected_publish_month_value,
     )
-
-    st.markdown("### Dashboard Debug")
-    debug_samples = _load_dashboard_debug_samples(int(project["project_id"]))
-    st.write(
-        {
-            "runtime_versions": _get_runtime_versions(),
-            "git_commit": _get_git_commit_hash(),
-        }
-    )
-    debug_counts_df = pd.DataFrame(
-        [
-            {"stage": "raw_presence_records_for_project", "rows": debug_samples["raw_presence_count"]},
-            {"stage": "raw_source_records_for_project", "rows": debug_samples["raw_source_count"]},
-            {"stage": "dashboard_joined_presence_rows", "rows": len(presence_enriched)},
-            {"stage": "dashboard_joined_source_rows", "rows": len(source_enriched)},
-            {"stage": "after_common_filters_presence_rows", "rows": len(filtered["presence_records"])},
-            {"stage": "after_common_filters_source_rows", "rows": len(filtered["source_records"])},
-            {"stage": "queries_after_dashboard_filters", "rows": len(queries_filtered)},
-            {"stage": "final_presence_rows_used_for_payload", "rows": len(presence_filtered)},
-            {"stage": "final_source_rows_used_for_payload", "rows": len(source_filtered)},
-        ]
-    )
-    st.dataframe(debug_counts_df, use_container_width=True, hide_index=True)
-
-    if not debug_samples["imported_query_numbers"].empty:
-        st.caption("Imported Excel query numbers and query_master linkage")
-        st.dataframe(debug_samples["imported_query_numbers"], use_container_width=True, hide_index=True)
-    else:
-        st.info("No Excel-uploaded query numbers found for this project yet.")
-
-    distinct_imported_queries = debug_samples["imported_query_numbers"]["query_number"].tolist() if not debug_samples["imported_query_numbers"].empty else []
-    st.write({"distinct_uploaded_query_numbers": distinct_imported_queries})
-
-    if not debug_samples["manual_presence_sample"].empty:
-        st.caption("Manual-entry presence sample")
-        st.dataframe(debug_samples["manual_presence_sample"], use_container_width=True, hide_index=True)
-    else:
-        st.info("No manual-entry presence sample found for this project.")
-
-    if not debug_samples["imported_presence_sample"].empty:
-        st.caption("Excel-upload presence sample")
-        st.dataframe(debug_samples["imported_presence_sample"], use_container_width=True, hide_index=True)
-    else:
-        st.info("No Excel-upload presence sample found for this project.")
 
     kpis = payload["kpis"]
 

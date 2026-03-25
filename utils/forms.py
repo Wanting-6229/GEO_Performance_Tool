@@ -147,62 +147,6 @@ def _render_monthly_import_feedback():
     else:
         st.info(message)
 
-    debug_info = st.session_state.get("monthly_import_debug_info")
-    if debug_info:
-        st.write(
-            {
-                "sheet_names": debug_info.get("sheet_names", []),
-                "presence_columns": debug_info.get("presence_columns", []),
-                "source_columns": debug_info.get("source_columns", []),
-                "distinct_uploaded_query_numbers": debug_info.get("distinct_uploaded_query_numbers", []),
-                "distinct_uploaded_created_by": debug_info.get("distinct_uploaded_created_by", []),
-                "distinct_uploaded_record_month": debug_info.get("distinct_uploaded_record_month", []),
-                "distinct_uploaded_ai_platform": debug_info.get("distinct_uploaded_ai_platform", []),
-            }
-        )
-
-        st.caption("Presence dtypes")
-        st.dataframe(
-            pd.DataFrame(
-                [{"column": k, "dtype": v} for k, v in debug_info.get("presence_dtypes", {}).items()]
-            ),
-            use_container_width=True,
-            hide_index=True,
-        )
-
-        st.caption("Source dtypes")
-        st.dataframe(
-            pd.DataFrame(
-                [{"column": k, "dtype": v} for k, v in debug_info.get("source_dtypes", {}).items()]
-            ),
-            use_container_width=True,
-            hide_index=True,
-        )
-
-        if debug_info.get("presence_head_raw"):
-            st.caption("Presence raw head()")
-            st.dataframe(pd.DataFrame(debug_info["presence_head_raw"]), use_container_width=True, hide_index=True)
-
-        if debug_info.get("presence_head_normalized"):
-            st.caption("Presence normalized head()")
-            st.dataframe(pd.DataFrame(debug_info["presence_head_normalized"]), use_container_width=True, hide_index=True)
-
-        if debug_info.get("source_head_raw"):
-            st.caption("Source raw head()")
-            st.dataframe(pd.DataFrame(debug_info["source_head_raw"]), use_container_width=True, hide_index=True)
-
-        if debug_info.get("source_head_normalized"):
-            st.caption("Source normalized head()")
-            st.dataframe(pd.DataFrame(debug_info["source_head_normalized"]), use_container_width=True, hide_index=True)
-
-        if debug_info.get("inserted_presence_sample"):
-            st.caption("Inserted presence sample")
-            st.dataframe(pd.DataFrame(debug_info["inserted_presence_sample"]), use_container_width=True, hide_index=True)
-
-        if debug_info.get("inserted_source_sample"):
-            st.caption("Inserted source sample")
-            st.dataframe(pd.DataFrame(debug_info["inserted_source_sample"]), use_container_width=True, hide_index=True)
-
 
 def _normalize_editor_df(df: pd.DataFrame, columns: list[str], defaults: dict) -> pd.DataFrame:
     df = _safe_df(df, columns=columns)
@@ -799,13 +743,11 @@ def render_excel_upload():
     )
 
     _render_monthly_import_feedback()
-    st.text("EXCEL DEBUG VISIBLE")
 
     if uploaded_file is not None:
         if st.button("Import Monthly Result Excel", type="primary"):
             try:
                 result = import_monthly_results_excel(uploaded_file, project_id=project_id)
-                st.session_state.monthly_import_debug_info = result.get("debug_info", {})
                 inserted_submissions = int(result.get("submissions", 0))
                 inserted_presence = int(result.get("presence_records", 0))
                 inserted_source = int(result.get("source_records", 0))
@@ -843,10 +785,9 @@ def render_excel_upload():
                     _set_monthly_import_feedback(
                         "info",
                         "No new data imported. All uploaded records already exist.",
-                    )
+                )
                 st.rerun()
             except Exception as e:
-                st.session_state.monthly_import_debug_info = {}
                 _set_monthly_import_feedback("warning", f"Import failed: {e}")
                 st.error(f"Import failed: {e}")
 
