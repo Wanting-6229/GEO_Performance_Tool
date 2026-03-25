@@ -1,5 +1,6 @@
 import os
 import sqlite3
+import time
 import uuid
 import re
 from datetime import datetime
@@ -11,9 +12,6 @@ try:
     import psycopg
 except Exception:  # pragma: no cover - optional in SQLite-only local mode
     psycopg = None
-
-
-_BACKEND_LOGGED = False
 
 
 # =========================================================
@@ -224,16 +222,17 @@ def get_backend_diagnostic_summary() -> str:
     return f"backend=sqlite db_path={sqlite_path}"
 
 
-def log_backend_selection_once():
-    global _BACKEND_LOGGED
-    if _BACKEND_LOGGED:
-        return
-    print(f"[db] startup {get_backend_diagnostic_summary()}", flush=True)
-    _BACKEND_LOGGED = True
+def log_final_backend_selection():
+    print(f"[db] final backend selected: {get_db_backend()}", flush=True)
 
 
-def log_schema_initialization_complete():
-    print(f"[db] schema initialization complete backend={get_db_backend()}", flush=True)
+def _log_db_perf(label: str, start_time: float, **metrics):
+    elapsed = time.perf_counter() - start_time
+    suffix = " ".join(f"{key}={value}" for key, value in metrics.items() if value is not None)
+    message = f"[db-perf] {label} elapsed={elapsed:.3f}s"
+    if suffix:
+        message = f"{message} {suffix}"
+    print(message, flush=True)
 
 
 def get_db_backend() -> str:
@@ -397,6 +396,7 @@ def ensure_default_project() -> int:
     row = cursor.fetchone()
     conn.commit()
     conn.close()
+    _log_db_perf("create_tables", create_tables_start, backend="sqlite")
     return int(row[0])
 
 
@@ -695,6 +695,10 @@ def _create_query_master_table(cursor: sqlite3.Cursor):
     CREATE INDEX IF NOT EXISTS idx_query_master_project
     ON query_master(project_id)
     """)
+    cursor.execute("""
+    CREATE INDEX IF NOT EXISTS idx_query_master_project_active
+    ON query_master(project_id, active, query_number)
+    """)
 
 
 def _create_submission_table(cursor: sqlite3.Cursor):
@@ -720,6 +724,22 @@ def _create_submission_table(cursor: sqlite3.Cursor):
     cursor.execute("""
     CREATE INDEX IF NOT EXISTS idx_submission_main
     ON submission(project_id, query_number, record_month, ai_platform, created_by, check_date)
+    """)
+    cursor.execute("""
+    CREATE INDEX IF NOT EXISTS idx_submission_project_created_at
+    ON submission(project_id, created_at DESC)
+    """)
+    cursor.execute("""
+    CREATE INDEX IF NOT EXISTS idx_submission_project_created_by
+    ON submission(project_id, created_by)
+    """)
+    cursor.execute("""
+    CREATE INDEX IF NOT EXISTS idx_submission_project_record_month
+    ON submission(project_id, record_month)
+    """)
+    cursor.execute("""
+    CREATE INDEX IF NOT EXISTS idx_submission_project_check_date
+    ON submission(project_id, check_date)
     """)
 
 
@@ -794,6 +814,10 @@ def _create_tables_postgres(cursor):
     CREATE INDEX IF NOT EXISTS idx_query_master_project
     ON query_master(project_id)
     """)
+    cursor.execute("""
+    CREATE INDEX IF NOT EXISTS idx_query_master_project_active
+    ON query_master(project_id, active, query_number)
+    """)
 
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS entity_mapping (
@@ -849,6 +873,22 @@ def _create_tables_postgres(cursor):
     cursor.execute("""
     CREATE INDEX IF NOT EXISTS idx_submission_main
     ON submission(project_id, query_number, record_month, ai_platform, created_by, check_date)
+    """)
+    cursor.execute("""
+    CREATE INDEX IF NOT EXISTS idx_submission_project_created_at
+    ON submission(project_id, created_at DESC)
+    """)
+    cursor.execute("""
+    CREATE INDEX IF NOT EXISTS idx_submission_project_created_by
+    ON submission(project_id, created_by)
+    """)
+    cursor.execute("""
+    CREATE INDEX IF NOT EXISTS idx_submission_project_record_month
+    ON submission(project_id, record_month)
+    """)
+    cursor.execute("""
+    CREATE INDEX IF NOT EXISTS idx_submission_project_check_date
+    ON submission(project_id, check_date)
     """)
 
     cursor.execute("""
@@ -1072,6 +1112,7 @@ def _migrate_query_related_tables(cursor: sqlite3.Cursor, default_project_id: in
 
 
 def create_tables():
+    create_tables_start = time.perf_counter()
     conn = get_connection()
     cursor = conn.cursor()
 
@@ -1089,6 +1130,7 @@ def create_tables():
         )
         conn.commit()
         conn.close()
+        _log_db_perf("create_tables", create_tables_start, backend="postgres")
         return
 
     cursor.execute("""
@@ -1278,6 +1320,7 @@ def bulk_update_query_master(query_numbers: List[str], update_fields: Dict[str, 
 
 
 def get_all_queries(project_id: int, active_only: bool = False) -> pd.DataFrame:
+    start_time = time.perf_counter()
     conn = get_connection()
     sql = """
     SELECT
@@ -1299,6 +1342,7 @@ def get_all_queries(project_id: int, active_only: bool = False) -> pd.DataFrame:
 
     df = _read_sql_query(sql, conn, params=params)
     conn.close()
+    _log_db_perf("get_all_queries", start_time, project_id=int(project_id), rows=len(df), active_only=active_only)
     return df
 
 
@@ -1791,8 +1835,9 @@ def create_submission(
 
 
 def get_all_submissions(project_id: int) -> pd.DataFrame:
+    start_time = time.perf_counter()
     conn = get_connection()
-    df = _read_sql_query("""
+    sql = """
     SELECT
         submission_id,
         query_number,
@@ -1805,8 +1850,10 @@ def get_all_submissions(project_id: int) -> pd.DataFrame:
     FROM submission
     WHERE project_id = ?
     ORDER BY created_at DESC
-    """, conn, params=[int(project_id)])
+    """
+    df = _read_sql_query(sql, conn, params=[int(project_id)])
     conn.close()
+    _log_db_perf("get_all_submissions", start_time, project_id=int(project_id), rows=len(df))
     return df
 
 
@@ -2009,9 +2056,50 @@ def save_manual_submission(
 # =========================================================
 # Reads - Master Tables
 # =========================================================
-def get_all_presence_records(project_id: int) -> pd.DataFrame:
+def get_presence_records_count(project_id: int) -> int:
+    start_time = time.perf_counter()
     conn = get_connection()
-    df = _read_sql_query("""
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT COUNT(*)
+        FROM presence_records p
+        JOIN submission s
+          ON p.submission_id = s.submission_id
+        WHERE s.project_id = ?
+        """,
+        (int(project_id),),
+    )
+    count = int(cursor.fetchone()[0])
+    conn.close()
+    _log_db_perf("get_presence_records_count", start_time, project_id=int(project_id), rows=count)
+    return count
+
+
+def get_source_records_count(project_id: int) -> int:
+    start_time = time.perf_counter()
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT COUNT(*)
+        FROM source_records r
+        JOIN submission s
+          ON r.submission_id = s.submission_id
+        WHERE s.project_id = ?
+        """,
+        (int(project_id),),
+    )
+    count = int(cursor.fetchone()[0])
+    conn.close()
+    _log_db_perf("get_source_records_count", start_time, project_id=int(project_id), rows=count)
+    return count
+
+
+def get_all_presence_records(project_id: int, limit: Optional[int] = None, offset: int = 0) -> pd.DataFrame:
+    start_time = time.perf_counter()
+    conn = get_connection()
+    sql = """
     SELECT
         p.id,
         p.submission_id,
@@ -2038,14 +2126,21 @@ def get_all_presence_records(project_id: int) -> pd.DataFrame:
      AND s.project_id = q.project_id
     WHERE s.project_id = ?
     ORDER BY p.id DESC
-    """, conn, params=[int(project_id)])
+    """
+    params = [int(project_id)]
+    if limit is not None:
+        sql += " LIMIT ? OFFSET ?"
+        params.extend([int(limit), int(offset)])
+    df = _read_sql_query(sql, conn, params=params)
     conn.close()
+    _log_db_perf("get_all_presence_records", start_time, project_id=int(project_id), rows=len(df), limit=limit, offset=offset)
     return df
 
 
-def get_all_source_records(project_id: int) -> pd.DataFrame:
+def get_all_source_records(project_id: int, limit: Optional[int] = None, offset: int = 0) -> pd.DataFrame:
+    start_time = time.perf_counter()
     conn = get_connection()
-    df = _read_sql_query("""
+    sql = """
     SELECT
         r.id,
         r.submission_id,
@@ -2074,8 +2169,14 @@ def get_all_source_records(project_id: int) -> pd.DataFrame:
      AND s.project_id = q.project_id
     WHERE s.project_id = ?
     ORDER BY r.id DESC
-    """, conn, params=[int(project_id)])
+    """
+    params = [int(project_id)]
+    if limit is not None:
+        sql += " LIMIT ? OFFSET ?"
+        params.extend([int(limit), int(offset)])
+    df = _read_sql_query(sql, conn, params=params)
     conn.close()
+    _log_db_perf("get_all_source_records", start_time, project_id=int(project_id), rows=len(df), limit=limit, offset=offset)
     return df
 
 
@@ -2083,6 +2184,7 @@ def get_dashboard_tables(
     project_id: int,
     query_status_filter: str = "active_only",
 ) -> Dict[str, pd.DataFrame]:
+    total_start = time.perf_counter()
     conn = get_connection()
 
     query_sql = """
@@ -2107,7 +2209,9 @@ def get_dashboard_tables(
 
     params = [int(project_id)]
 
+    query_start = time.perf_counter()
     queries_df = _read_sql_query(query_sql, conn, params=query_params)
+    _log_db_perf("dashboard query_master load", query_start, project_id=int(project_id), rows=len(queries_df), query_status_filter=query_status_filter)
 
     presence_sql = f"""
     SELECT
@@ -2173,10 +2277,15 @@ def get_dashboard_tables(
     elif query_status_filter == "archived_only":
         source_sql += " AND q.active = 0"
 
+    presence_start = time.perf_counter()
     presence_df = _read_sql_query(presence_sql, conn, params=params)
+    _log_db_perf("dashboard presence load", presence_start, project_id=int(project_id), rows=len(presence_df), query_status_filter=query_status_filter)
+    source_start = time.perf_counter()
     source_df = _read_sql_query(source_sql, conn, params=params)
+    _log_db_perf("dashboard source load", source_start, project_id=int(project_id), rows=len(source_df), query_status_filter=query_status_filter)
 
     conn.close()
+    _log_db_perf("get_dashboard_tables", total_start, project_id=int(project_id), queries=len(queries_df), presence=len(presence_df), source=len(source_df), query_status_filter=query_status_filter)
 
     return {
         "queries": queries_df,

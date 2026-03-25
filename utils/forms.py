@@ -2,6 +2,7 @@ import time
 
 import pandas as pd
 import streamlit as st
+import utils.db as db_module
 
 from utils.db import (
     # query master
@@ -44,8 +45,6 @@ from utils.db import (
     # raw master data
     get_all_presence_records,
     get_all_source_records,
-    get_presence_records_count,
-    get_source_records_count,
     bulk_delete_presence_records,
     bulk_delete_source_records,
 )
@@ -131,6 +130,20 @@ def _current_project_id() -> int | None:
     if project_id in (None, ""):
         return None
     return int(project_id)
+
+
+def _get_presence_records_count(project_id: int) -> int:
+    count_fn = getattr(db_module, "get_presence_records_count", None)
+    if callable(count_fn):
+        return int(count_fn(project_id))
+    return len(get_all_presence_records(project_id=project_id))
+
+
+def _get_source_records_count(project_id: int) -> int:
+    count_fn = getattr(db_module, "get_source_records_count", None)
+    if callable(count_fn):
+        return int(count_fn(project_id))
+    return len(get_all_source_records(project_id=project_id))
 
 
 @st.cache_data(show_spinner=False)
@@ -1389,7 +1402,7 @@ def render_raw_records():
     source_rows = 0
 
     if raw_section == "Source Master Table":
-        total_rows = get_source_records_count(project_id=project_id)
+        total_rows = _get_source_records_count(project_id=project_id)
         source_rows = total_rows
         total_pages = max(1, (total_rows + page_size - 1) // page_size)
         page_number = st.number_input(
@@ -1440,7 +1453,7 @@ def render_raw_records():
                     except Exception as e:
                         st.error(f"Failed to delete source rows: {e}")
     else:
-        total_rows = get_presence_records_count(project_id=project_id)
+        total_rows = _get_presence_records_count(project_id=project_id)
         presence_rows = total_rows
         total_pages = max(1, (total_rows + page_size - 1) // page_size)
         page_number = st.number_input(
