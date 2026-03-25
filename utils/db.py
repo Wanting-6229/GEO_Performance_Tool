@@ -1,6 +1,7 @@
 import os
 import sqlite3
 import uuid
+import re
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 
@@ -74,6 +75,60 @@ def normalize_text(value: Any) -> str:
     if text.lower() in {"none", "nan"}:
         return ""
     return text
+
+
+def _clean_excel_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, float) and pd.isna(value):
+        return ""
+    text = str(value)
+    text = text.replace("\ufeff", "").replace("\u00a0", " ").replace("\u200b", "")
+    text = re.sub(r"\s+", " ", text).strip()
+    if text.lower() in {"none", "nan"}:
+        return ""
+    return text
+
+
+def _normalize_excel_query_number(value: Any) -> str:
+    return _clean_excel_text(value).upper()
+
+
+def _normalize_excel_date(value: Any) -> str:
+    text = _clean_excel_text(value)
+    if not text:
+        return ""
+    parsed = pd.to_datetime(value, errors="coerce")
+    if pd.notna(parsed):
+        return parsed.strftime("%Y-%m-%d")
+    return text
+
+
+def _normalize_excel_record_month(value: Any) -> str:
+    text = _clean_excel_text(value)
+    if not text:
+        return ""
+    parsed = pd.to_datetime(value, errors="coerce")
+    if pd.notna(parsed):
+        return parsed.strftime("%Y-%m")
+    match = re.fullmatch(r"(\d{4})[-/](\d{1,2})", text)
+    if match:
+        return f"{match.group(1)}-{int(match.group(2)):02d}"
+    return text
+
+
+def _normalize_ai_platform_name(value: Any) -> str:
+    text = _clean_excel_text(value)
+    normalized = text.casefold().replace(" ", "").replace("_", "").replace("-", "")
+    platform_map = {
+        "doubao": "Doubao",
+        "deepseek": "DeepSeek",
+        "kimi": "Kimi",
+        "qianwen": "Qianwen",
+        "yuanbao": "Yuanbao",
+        "wenxinyiyan": "Wenxinyiyan",
+    }
+    return platform_map.get(normalized, text)
 
 
 def normalize_yes_no(value: Any) -> str:
@@ -1964,7 +2019,10 @@ def build_monthly_results_template_bytes() -> bytes:
 # =========================================================
 def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
-    df.columns = [str(c).strip() for c in df.columns]
+    df.columns = [
+        str(c).replace("\ufeff", "").replace("\u00a0", " ").replace("\u200b", "").strip()
+        for c in df.columns
+    ]
     return df
 
 
@@ -2072,8 +2130,11 @@ def import_monthly_results_excel(uploaded_file, project_id: int):
     if missing_sheets:
         raise ValueError(f"Missing sheet(s): {', '.join(missing_sheets)}")
 
-    presence_df = _normalize_columns(pd.read_excel(uploaded_file, sheet_name="presence_records"))
-    source_df = _normalize_columns(pd.read_excel(uploaded_file, sheet_name="source_records"))
+    raw_presence_df = _normalize_columns(pd.read_excel(uploaded_file, sheet_name="presence_records"))
+    raw_source_df = _normalize_columns(pd.read_excel(uploaded_file, sheet_name="source_records"))
+
+    presence_df = raw_presence_df.copy()
+    source_df = raw_source_df.copy()
 
     _validate_required_columns(presence_df, PRESENCE_IMPORT_COLUMNS, "presence_records")
     _validate_required_columns(source_df, SOURCE_IMPORT_COLUMNS, "source_records")
@@ -2082,15 +2143,23 @@ def import_monthly_results_excel(uploaded_file, project_id: int):
     source_df = source_df[SOURCE_IMPORT_COLUMNS].copy()
 
     presence_df = presence_df.dropna(subset=["query_number", "record_month", "ai_platform", "check_date", "entity_name_cn", "position", "created_by"])
-    for col in ["query_number", "record_month", "ai_platform", "check_date", "entity_name_cn", "entity_name_en", "created_by"]:
-        presence_df[col] = presence_df[col].apply(normalize_text)
+    presence_df["query_number"] = presence_df["query_number"].apply(_normalize_excel_query_number)
+    presence_df["record_month"] = presence_df["record_month"].apply(_normalize_excel_record_month)
+    presence_df["ai_platform"] = presence_df["ai_platform"].apply(_normalize_ai_platform_name)
+    presence_df["check_date"] = presence_df["check_date"].apply(_normalize_excel_date)
+    for col in ["entity_name_cn", "entity_name_en", "created_by"]:
+        presence_df[col] = presence_df[col].apply(_clean_excel_text)
     presence_df["position"] = pd.to_numeric(presence_df["position"], errors="coerce")
     presence_df = presence_df.dropna(subset=["position"])
     presence_df["position"] = presence_df["position"].astype(int)
 
     source_df = source_df.dropna(subset=["query_number", "record_month", "ai_platform", "check_date", "source_name", "occurrence_number", "quoted_or_not", "created_by"])
-    for col in ["query_number", "record_month", "ai_platform", "check_date", "source_name", "source_url", "quoted_or_not", "quoted_url", "created_by"]:
-        source_df[col] = source_df[col].apply(normalize_text)
+    source_df["query_number"] = source_df["query_number"].apply(_normalize_excel_query_number)
+    source_df["record_month"] = source_df["record_month"].apply(_normalize_excel_record_month)
+    source_df["ai_platform"] = source_df["ai_platform"].apply(_normalize_ai_platform_name)
+    source_df["check_date"] = source_df["check_date"].apply(_normalize_excel_date)
+    for col in ["source_name", "source_url", "quoted_or_not", "quoted_url", "created_by"]:
+        source_df[col] = source_df[col].apply(_clean_excel_text)
     source_df["occurrence_number"] = pd.to_numeric(source_df["occurrence_number"], errors="coerce")
     source_df = source_df.dropna(subset=["occurrence_number"])
     source_df["occurrence_number"] = source_df["occurrence_number"].astype(int)
@@ -2226,6 +2295,24 @@ def import_monthly_results_excel(uploaded_file, project_id: int):
             delete_submission(submission_id, project_id=project_id)
             raise
 
+    debug_info = {
+        "sheet_names": list(xls.sheet_names),
+        "presence_columns": raw_presence_df.columns.tolist(),
+        "source_columns": raw_source_df.columns.tolist(),
+        "presence_dtypes": {k: str(v) for k, v in raw_presence_df.dtypes.items()},
+        "source_dtypes": {k: str(v) for k, v in raw_source_df.dtypes.items()},
+        "presence_head_raw": raw_presence_df.head(5).astype(str).to_dict(orient="records"),
+        "source_head_raw": raw_source_df.head(5).astype(str).to_dict(orient="records"),
+        "presence_head_normalized": presence_df.head(5).astype(str).to_dict(orient="records"),
+        "source_head_normalized": source_df.head(5).astype(str).to_dict(orient="records"),
+        "distinct_uploaded_query_numbers": sorted(set(presence_df["query_number"].tolist()) | set(source_df["query_number"].tolist())),
+        "distinct_uploaded_created_by": sorted(set(presence_df["created_by"].tolist()) | set(source_df["created_by"].tolist())),
+        "distinct_uploaded_record_month": sorted(set(presence_df["record_month"].tolist()) | set(source_df["record_month"].tolist())),
+        "distinct_uploaded_ai_platform": sorted(set(presence_df["ai_platform"].tolist()) | set(source_df["ai_platform"].tolist())),
+        "inserted_presence_sample": presence_df.head(1).astype(str).to_dict(orient="records"),
+        "inserted_source_sample": source_df.head(1).astype(str).to_dict(orient="records"),
+    }
+
     return {
         "success": True,
         "submissions": created_submissions,
@@ -2237,4 +2324,5 @@ def import_monthly_results_excel(uploaded_file, project_id: int):
         "skipped_duplicate_submissions": skipped_duplicate_submissions,
         "skipped_duplicate_presence_records": skipped_duplicate_presence,
         "skipped_duplicate_source_records": skipped_duplicate_source,
+        "debug_info": debug_info,
     }
