@@ -7,6 +7,14 @@ from typing import Optional, List, Dict, Any
 
 import pandas as pd
 
+try:
+    import psycopg
+except Exception:  # pragma: no cover - optional in SQLite-only local mode
+    psycopg = None
+
+
+_BACKEND_LOGGED = False
+
 
 # =========================================================
 # Paths
@@ -202,10 +210,142 @@ def generate_submission_id() -> str:
     return f"SUB_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6].upper()}"
 
 
-def get_connection() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_NAME, check_same_thread=False)
+def get_database_url() -> str:
+    return os.getenv("DATABASE_URL", "").strip()
+
+
+def get_backend_diagnostic_summary() -> str:
+    backend = get_db_backend()
+    if backend == "postgres":
+        database_url = get_database_url()
+        safe_url = re.sub(r"://([^:@]+):([^@]+)@", r"://\1:***@", database_url)
+        return f"backend=postgres database_url={safe_url}"
+    sqlite_path = _get_sqlite_path()
+    return f"backend=sqlite db_path={sqlite_path}"
+
+
+def log_backend_selection_once():
+    global _BACKEND_LOGGED
+    if _BACKEND_LOGGED:
+        return
+    print(f"[db] startup {get_backend_diagnostic_summary()}", flush=True)
+    _BACKEND_LOGGED = True
+
+
+def log_schema_initialization_complete():
+    print(f"[db] schema initialization complete backend={get_db_backend()}", flush=True)
+
+
+def get_db_backend() -> str:
+    database_url = get_database_url()
+    if not database_url:
+        return "sqlite"
+    lowered = database_url.lower()
+    if lowered.startswith("postgres://") or lowered.startswith("postgresql://"):
+        return "postgres"
+    if lowered.startswith("sqlite:///"):
+        return "sqlite"
+    return "sqlite"
+
+
+def _get_sqlite_path() -> str:
+    database_url = get_database_url()
+    if database_url.lower().startswith("sqlite:///"):
+        return database_url.replace("sqlite:///", "", 1)
+    return DB_NAME
+
+
+def _normalize_postgres_dsn(database_url: str) -> str:
+    if database_url.startswith("postgres://"):
+        return "postgresql://" + database_url[len("postgres://"):]
+    return database_url
+
+
+def _translate_sql(sql: str, backend: str) -> str:
+    if backend != "postgres":
+        return sql
+    return sql.replace("?", "%s")
+
+
+def _normalize_sql_params(params: Any):
+    if params is None:
+        return None
+    if isinstance(params, tuple):
+        return params
+    if isinstance(params, list):
+        return tuple(params)
+    return (params,)
+
+
+class CursorCompat:
+    def __init__(self, cursor, backend: str):
+        self._cursor = cursor
+        self._backend = backend
+
+    def execute(self, sql: str, params: Any = None):
+        translated = _translate_sql(sql, self._backend)
+        normalized = _normalize_sql_params(params)
+        if normalized is None:
+            return self._cursor.execute(translated)
+        return self._cursor.execute(translated, normalized)
+
+    def executemany(self, sql: str, seq_of_params):
+        translated = _translate_sql(sql, self._backend)
+        normalized_seq = []
+        for params in seq_of_params:
+            normalized_seq.append(_normalize_sql_params(params) or tuple())
+        return self._cursor.executemany(translated, normalized_seq)
+
+    def __getattr__(self, name: str):
+        return getattr(self._cursor, name)
+
+    @property
+    def lastrowid(self):
+        return getattr(self._cursor, "lastrowid", None)
+
+
+class ConnectionCompat:
+    def __init__(self, conn, backend: str):
+        self._conn = conn
+        self.backend = backend
+
+    def cursor(self, *args, **kwargs):
+        return CursorCompat(self._conn.cursor(*args, **kwargs), self.backend)
+
+    def commit(self):
+        return self._conn.commit()
+
+    def rollback(self):
+        return self._conn.rollback()
+
+    def close(self):
+        return self._conn.close()
+
+    def __getattr__(self, name: str):
+        return getattr(self._conn, name)
+
+
+def get_connection():
+    backend = get_db_backend()
+    if backend == "postgres":
+        if psycopg is None:
+            raise RuntimeError("PostgreSQL backend requested but psycopg is not installed.")
+        conn = psycopg.connect(_normalize_postgres_dsn(get_database_url()))
+        return ConnectionCompat(conn, backend="postgres")
+
+    conn = sqlite3.connect(_get_sqlite_path(), check_same_thread=False)
     conn.execute("PRAGMA foreign_keys = ON;")
     return conn
+
+
+def _read_sql_query(sql: str, conn, params: Optional[List[Any]] = None) -> pd.DataFrame:
+    if isinstance(conn, ConnectionCompat) and conn.backend == "postgres":
+        cursor = conn.cursor()
+        cursor.execute(sql, params or [])
+        rows = cursor.fetchall()
+        columns = [desc[0] for desc in cursor.description] if cursor.description else []
+        return pd.DataFrame(rows, columns=columns)
+    return pd.read_sql_query(sql, conn, params=params)
 
 
 # =========================================================
@@ -274,7 +414,20 @@ def create_project(project_name: str) -> int:
         """,
         (name,),
     )
-    project_id = int(cursor.lastrowid)
+    cursor.execute(
+        """
+        SELECT project_id
+        FROM projects
+        WHERE project_name = ?
+        LIMIT 1
+        """,
+        (name,),
+    )
+    row = cursor.fetchone()
+    if row is None:
+        conn.close()
+        raise ValueError("Failed to create project.")
+    project_id = int(row[0])
     conn.commit()
     conn.close()
     return project_id
@@ -352,7 +505,7 @@ def touch_project(project_id: int):
 
 def list_projects() -> pd.DataFrame:
     conn = get_connection()
-    df = pd.read_sql_query(
+    df = _read_sql_query(
         """
         SELECT
             project_id,
@@ -610,6 +763,131 @@ def _create_source_records_table(cursor: sqlite3.Cursor):
     """)
 
 
+def _create_tables_postgres(cursor):
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS projects (
+        project_id BIGSERIAL PRIMARY KEY,
+        project_name TEXT NOT NULL UNIQUE,
+        status TEXT NOT NULL DEFAULT 'active',
+        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )
+    """)
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS query_master (
+        id BIGSERIAL PRIMARY KEY,
+        project_id BIGINT NOT NULL,
+        query_number TEXT NOT NULL,
+        query_type TEXT NOT NULL,
+        query_name_cn TEXT NOT NULL,
+        query_name_en TEXT,
+        product_category TEXT NOT NULL,
+        publish_month_default TEXT,
+        active INTEGER NOT NULL DEFAULT 1,
+        updated_at TEXT NOT NULL,
+        UNIQUE(project_id, query_number),
+        FOREIGN KEY (project_id) REFERENCES projects(project_id) ON DELETE CASCADE
+    )
+    """)
+    cursor.execute("""
+    CREATE INDEX IF NOT EXISTS idx_query_master_project
+    ON query_master(project_id)
+    """)
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS entity_mapping (
+        id BIGSERIAL PRIMARY KEY,
+        project_id BIGINT NOT NULL,
+        entity_name_cn TEXT NOT NULL,
+        entity_name_en TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE(project_id, entity_name_cn),
+        FOREIGN KEY (project_id) REFERENCES projects(project_id) ON DELETE CASCADE
+    )
+    """)
+    cursor.execute("""
+    CREATE INDEX IF NOT EXISTS idx_entity_mapping_project
+    ON entity_mapping(project_id)
+    """)
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS source_mapping (
+        id BIGSERIAL PRIMARY KEY,
+        project_id BIGINT NOT NULL,
+        source_name TEXT NOT NULL,
+        source_url TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE(project_id, source_name),
+        FOREIGN KEY (project_id) REFERENCES projects(project_id) ON DELETE CASCADE
+    )
+    """)
+    cursor.execute("""
+    CREATE INDEX IF NOT EXISTS idx_source_mapping_project
+    ON source_mapping(project_id)
+    """)
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS submission (
+        submission_id TEXT PRIMARY KEY,
+        project_id BIGINT NOT NULL,
+        query_number TEXT NOT NULL,
+        record_month TEXT NOT NULL,
+        ai_platform TEXT NOT NULL,
+        check_date TEXT NOT NULL,
+        created_by TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        notes TEXT,
+        FOREIGN KEY (project_id) REFERENCES projects(project_id) ON DELETE CASCADE,
+        FOREIGN KEY (project_id, query_number) REFERENCES query_master(project_id, query_number)
+    )
+    """)
+    cursor.execute("""
+    CREATE INDEX IF NOT EXISTS idx_submission_project
+    ON submission(project_id)
+    """)
+    cursor.execute("""
+    CREATE INDEX IF NOT EXISTS idx_submission_main
+    ON submission(project_id, query_number, record_month, ai_platform, created_by, check_date)
+    """)
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS presence_records (
+        id BIGSERIAL PRIMARY KEY,
+        submission_id TEXT NOT NULL,
+        query_number TEXT NOT NULL,
+        check_date TEXT NOT NULL,
+        entity_name_cn TEXT NOT NULL,
+        entity_name_en TEXT NOT NULL,
+        position INTEGER NOT NULL,
+        FOREIGN KEY (submission_id) REFERENCES submission(submission_id) ON DELETE CASCADE
+    )
+    """)
+    cursor.execute("""
+    CREATE INDEX IF NOT EXISTS idx_presence_submission
+    ON presence_records(submission_id)
+    """)
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS source_records (
+        id BIGSERIAL PRIMARY KEY,
+        submission_id TEXT NOT NULL,
+        query_number TEXT NOT NULL,
+        check_date TEXT NOT NULL,
+        source_name TEXT NOT NULL,
+        source_url TEXT,
+        occurrence_number INTEGER NOT NULL,
+        quoted_or_not TEXT NOT NULL,
+        quoted_url TEXT,
+        FOREIGN KEY (submission_id) REFERENCES submission(submission_id) ON DELETE CASCADE
+    )
+    """)
+    cursor.execute("""
+    CREATE INDEX IF NOT EXISTS idx_source_submission
+    ON source_records(submission_id)
+    """)
+
+
 def _migrate_query_related_tables(cursor: sqlite3.Cursor, default_project_id: int):
     cursor.execute("PRAGMA foreign_keys = OFF")
 
@@ -796,6 +1074,22 @@ def _migrate_query_related_tables(cursor: sqlite3.Cursor, default_project_id: in
 def create_tables():
     conn = get_connection()
     cursor = conn.cursor()
+
+    if get_db_backend() == "postgres":
+        _create_tables_postgres(cursor)
+        cursor.execute(
+            """
+            INSERT INTO projects (project_name, status, created_at, updated_at)
+            VALUES (?, 'active', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            ON CONFLICT(project_name) DO UPDATE SET
+                status = 'active',
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            ("Default Project",),
+        )
+        conn.commit()
+        conn.close()
+        return
 
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS projects (
@@ -1003,7 +1297,7 @@ def get_all_queries(project_id: int, active_only: bool = False) -> pd.DataFrame:
         sql += " AND active = 1"
     sql += " ORDER BY query_number"
 
-    df = pd.read_sql_query(sql, conn, params=params)
+    df = _read_sql_query(sql, conn, params=params)
     conn.close()
     return df
 
@@ -1171,7 +1465,7 @@ def get_entity_name_en(project_id: int, entity_name_cn: str) -> str:
 
 def get_all_entity_mappings(project_id: int) -> pd.DataFrame:
     conn = get_connection()
-    df = pd.read_sql_query("""
+    df = _read_sql_query("""
     SELECT entity_name_cn, entity_name_en, updated_at
     FROM entity_mapping
     WHERE project_id = ?
@@ -1322,7 +1616,7 @@ def get_source_url(project_id: int, source_name: str) -> str:
 
 def get_all_source_mappings(project_id: int) -> pd.DataFrame:
     conn = get_connection()
-    df = pd.read_sql_query("""
+    df = _read_sql_query("""
     SELECT source_name, source_url, updated_at
     FROM source_mapping
     WHERE project_id = ?
@@ -1498,7 +1792,7 @@ def create_submission(
 
 def get_all_submissions(project_id: int) -> pd.DataFrame:
     conn = get_connection()
-    df = pd.read_sql_query("""
+    df = _read_sql_query("""
     SELECT
         submission_id,
         query_number,
@@ -1717,7 +2011,7 @@ def save_manual_submission(
 # =========================================================
 def get_all_presence_records(project_id: int) -> pd.DataFrame:
     conn = get_connection()
-    df = pd.read_sql_query("""
+    df = _read_sql_query("""
     SELECT
         p.id,
         p.submission_id,
@@ -1751,7 +2045,7 @@ def get_all_presence_records(project_id: int) -> pd.DataFrame:
 
 def get_all_source_records(project_id: int) -> pd.DataFrame:
     conn = get_connection()
-    df = pd.read_sql_query("""
+    df = _read_sql_query("""
     SELECT
         r.id,
         r.submission_id,
@@ -1813,7 +2107,7 @@ def get_dashboard_tables(
 
     params = [int(project_id)]
 
-    queries_df = pd.read_sql_query(query_sql, conn, params=query_params)
+    queries_df = _read_sql_query(query_sql, conn, params=query_params)
 
     presence_sql = f"""
     SELECT
@@ -1879,8 +2173,8 @@ def get_dashboard_tables(
     elif query_status_filter == "archived_only":
         source_sql += " AND q.active = 0"
 
-    presence_df = pd.read_sql_query(presence_sql, conn, params=params)
-    source_df = pd.read_sql_query(source_sql, conn, params=params)
+    presence_df = _read_sql_query(presence_sql, conn, params=params)
+    source_df = _read_sql_query(source_sql, conn, params=params)
 
     conn.close()
 

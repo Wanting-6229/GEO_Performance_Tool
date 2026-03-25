@@ -5,6 +5,8 @@ import streamlit as st
 
 from utils.db import (
     create_tables,
+    log_backend_selection_once,
+    log_schema_initialization_complete,
     create_project,
     rename_project,
     delete_project_cascade,
@@ -45,7 +47,9 @@ st.set_page_config(
 # =========================================================
 # Initial Setup
 # =========================================================
+log_backend_selection_once()
 create_tables()
+log_schema_initialization_complete()
 
 if "page" not in st.session_state:
     st.session_state.page = "Projects"
