@@ -133,17 +133,11 @@ def _current_project_id() -> int | None:
 
 
 def _get_presence_records_count(project_id: int) -> int:
-    count_fn = getattr(db_module, "get_presence_records_count", None)
-    if callable(count_fn):
-        return int(count_fn(project_id))
-    return len(get_all_presence_records(project_id=project_id))
+    return _cached_presence_records_count(project_id)
 
 
 def _get_source_records_count(project_id: int) -> int:
-    count_fn = getattr(db_module, "get_source_records_count", None)
-    if callable(count_fn):
-        return int(count_fn(project_id))
-    return len(get_all_source_records(project_id=project_id))
+    return _cached_source_records_count(project_id)
 
 
 @st.cache_data(show_spinner=False)
@@ -189,6 +183,47 @@ def _cached_source_mapping_lookup(project_id: int):
         for _, row in mapping_df.iterrows()
         if _norm(row.get("source_name", ""))
     }
+
+
+@st.cache_data(show_spinner=False, ttl=60)
+def _cached_entity_mappings_df(project_id: int):
+    return get_all_entity_mappings(project_id)
+
+
+@st.cache_data(show_spinner=False, ttl=60)
+def _cached_source_mappings_df(project_id: int):
+    return get_all_source_mappings(project_id)
+
+
+@st.cache_data(show_spinner=False, ttl=60)
+def _cached_submissions_df(project_id: int):
+    return get_all_submissions(project_id=project_id)
+
+
+@st.cache_data(show_spinner=False, ttl=60)
+def _cached_presence_records_count(project_id: int) -> int:
+    count_fn = getattr(db_module, "get_presence_records_count", None)
+    if callable(count_fn):
+        return int(count_fn(project_id))
+    return len(get_all_presence_records(project_id=project_id))
+
+
+@st.cache_data(show_spinner=False, ttl=60)
+def _cached_source_records_count(project_id: int) -> int:
+    count_fn = getattr(db_module, "get_source_records_count", None)
+    if callable(count_fn):
+        return int(count_fn(project_id))
+    return len(get_all_source_records(project_id=project_id))
+
+
+@st.cache_data(show_spinner=False, ttl=60)
+def _cached_presence_records_page(project_id: int, limit: int, offset: int):
+    return get_all_presence_records(project_id=project_id, limit=limit, offset=offset)
+
+
+@st.cache_data(show_spinner=False, ttl=60)
+def _cached_source_records_page(project_id: int, limit: int, offset: int):
+    return get_all_source_records(project_id=project_id, limit=limit, offset=offset)
 
 
 def _set_monthly_import_feedback(message_type: str, message: str):
@@ -602,6 +637,20 @@ def _clear_data_entry_read_caches():
     _cached_source_mapping_lookup.clear()
 
 
+def _clear_data_record_read_caches():
+    _cached_queries_for_form.clear()
+    _cached_query_info.clear()
+    _cached_entity_mapping_lookup.clear()
+    _cached_source_mapping_lookup.clear()
+    _cached_entity_mappings_df.clear()
+    _cached_source_mappings_df.clear()
+    _cached_submissions_df.clear()
+    _cached_presence_records_count.clear()
+    _cached_source_records_count.clear()
+    _cached_presence_records_page.clear()
+    _cached_source_records_page.clear()
+
+
 def _render_presence_records_table():
     records = st.session_state.get("manual_presence_records", [])
     if not records:
@@ -809,6 +858,7 @@ def render_manual_entry():
                     )
 
                     _reset_editor_state()
+                    _clear_data_record_read_caches()
                     _set_manual_entry_feedback("success", f"Submission saved successfully: {submission_id}")
                     st.rerun()
             except Exception as e:
@@ -887,6 +937,7 @@ def render_excel_upload():
                             "info",
                             "No new data imported. All uploaded records already exist.",
                         )
+                    _clear_data_record_read_caches()
                     st.rerun()
                 except Exception as e:
                     _set_monthly_import_feedback("warning", f"Import failed: {e}")
@@ -928,7 +979,7 @@ def render_query_master_manager():
         if uploaded_qm is not None and st.button("Import Query Master Excel", use_container_width=True, key="import_query_master_btn"):
             try:
                 result = import_query_master_excel(uploaded_qm, project_id=project_id)
-                _clear_data_entry_read_caches()
+                _clear_data_record_read_caches()
                 st.success(
                     f"Query Master import successful. "
                     f"Inserted: {result['query_master']}, "
@@ -980,7 +1031,7 @@ def render_query_master_manager():
                         publish_month_default=publish_month_default,
                         active=int(active),
                     )
-                    _clear_data_entry_read_caches()
+                    _clear_data_record_read_caches()
                     st.success("Query Master saved.")
                     st.rerun()
             except Exception as e:
@@ -1044,7 +1095,7 @@ def render_query_master_manager():
                                     query_numbers=selected_query_numbers,
                                 )
                                 st.session_state.show_delete_query_master_confirm = False
-                                _clear_data_entry_read_caches()
+                                _clear_data_record_read_caches()
                                 st.success(f"Successfully deleted {deleted_count} query record(s).")
                                 st.rerun()
                             except Exception as e:
@@ -1143,7 +1194,7 @@ def render_query_master_manager():
                                 st.error("Please choose at least one field to update.")
                             else:
                                 bulk_update_query_master(selected_query_numbers, update_fields, project_id=project_id)
-                                _clear_data_entry_read_caches()
+                                _clear_data_record_read_caches()
                                 st.success("Selected Query Master rows updated.")
                                 st.rerun()
 
@@ -1157,7 +1208,7 @@ def render_query_master_manager():
             queries_df["query_number"].tolist(),
             key="query_master_archive_selector",
         )
-        q_info = get_query_by_number(selected_query, project_id=project_id)
+        q_info = _cached_query_info(project_id, selected_query)
 
         if q_info:
             current_active = q_info.get("active", 1)
@@ -1175,7 +1226,7 @@ def render_query_master_manager():
             if st.button("Update Query Status", use_container_width=True):
                 try:
                     set_query_active(selected_query, target_active, project_id=project_id)
-                    _clear_data_entry_read_caches()
+                    _clear_data_record_read_caches()
                     st.success("Query status updated.")
                     st.rerun()
                 except Exception as e:
@@ -1209,7 +1260,7 @@ def render_entity_mapping_manager():
                         st.error("Both Entity Name CN and Entity Name EN are required.")
                     else:
                         upsert_entity_mapping(project_id, _norm(entity_name_cn), _norm(entity_name_en))
-                        _cached_entity_mapping_lookup.clear()
+                        _clear_data_record_read_caches()
                         st.success("Entity mapping saved.")
                         st.rerun()
                 except Exception as e:
@@ -1226,13 +1277,13 @@ def render_entity_mapping_manager():
         if uploaded_entity is not None and st.button("Import Entity Mapping Excel", use_container_width=True, key="import_entity_mapping_btn"):
             success, msg = load_entity_mapping_from_excel(project_id=project_id, uploaded_file=uploaded_entity)
             if success:
-                _cached_entity_mapping_lookup.clear()
+                _clear_data_record_read_caches()
                 st.success(msg)
                 st.rerun()
             else:
                 st.error(msg)
 
-    mapping_df = get_all_entity_mappings(project_id)
+    mapping_df = _cached_entity_mappings_df(project_id)
     if mapping_df.empty:
         st.info("No entity mappings yet.")
     else:
@@ -1277,7 +1328,7 @@ def render_entity_mapping_manager():
                         try:
                             deleted_count = delete_entity_mapping_batch(project_id=project_id, entity_name_cns=selected_entity_names)
                             st.session_state.show_delete_entity_mapping_confirm = False
-                            _cached_entity_mapping_lookup.clear()
+                            _clear_data_record_read_caches()
                             st.success(f"Successfully deleted {deleted_count} entity mapping record(s).")
                             st.rerun()
                         except Exception as e:
@@ -1315,7 +1366,7 @@ def render_source_mapping_manager():
                         st.error("Both Source Name and Source URL are required.")
                     else:
                         upsert_source_mapping(project_id, _norm(source_name), _norm(source_url))
-                        _cached_source_mapping_lookup.clear()
+                        _clear_data_record_read_caches()
                         st.success("Source mapping saved.")
                         st.rerun()
                 except Exception as e:
@@ -1332,13 +1383,13 @@ def render_source_mapping_manager():
         if uploaded_source is not None and st.button("Import Source Mapping Excel", use_container_width=True, key="import_source_mapping_btn"):
             success, msg = load_source_mapping_from_excel(project_id=project_id, uploaded_file=uploaded_source)
             if success:
-                _cached_source_mapping_lookup.clear()
+                _clear_data_record_read_caches()
                 st.success(msg)
                 st.rerun()
             else:
                 st.error(msg)
 
-    mapping_df = get_all_source_mappings(project_id)
+    mapping_df = _cached_source_mappings_df(project_id)
     if mapping_df.empty:
         st.info("No source mappings yet.")
     else:
@@ -1383,7 +1434,7 @@ def render_source_mapping_manager():
                         try:
                             deleted_count = delete_source_mapping_batch(project_id=project_id, source_names=selected_source_names)
                             st.session_state.show_delete_source_mapping_confirm = False
-                            _cached_source_mapping_lookup.clear()
+                            _clear_data_record_read_caches()
                             st.success(f"Successfully deleted {deleted_count} source mapping record(s).")
                             st.rerun()
                         except Exception as e:
@@ -1407,7 +1458,7 @@ def render_submission_manager():
         st.info("Please select a project first.")
         return
 
-    submissions_df = get_all_submissions(project_id=project_id)
+    submissions_df = _cached_submissions_df(project_id)
     _log_form_perf("submission manager load", submission_manager_start, project_id=int(project_id), rows=len(submissions_df))
     if submissions_df.empty:
         st.info("No submissions yet.")
@@ -1436,6 +1487,7 @@ def render_submission_manager():
         else:
             try:
                 bulk_delete_submissions(selected_ids, project_id=project_id)
+                _clear_data_record_read_caches()
                 st.success("Selected submissions deleted.")
                 st.rerun()
             except Exception as e:
@@ -1495,7 +1547,7 @@ def render_raw_records():
         )
         offset = (int(page_number) - 1) * int(page_size)
         print(f"[form-perf] source raw rows before render total_rows={total_rows} page_size={page_size} page={int(page_number)}", flush=True)
-        source_df = get_all_source_records(project_id=project_id, limit=int(page_size), offset=offset)
+        source_df = _cached_source_records_page(project_id=project_id, limit=int(page_size), offset=offset)
         if source_df.empty:
             st.info("No source data yet.")
         else:
@@ -1528,6 +1580,7 @@ def render_raw_records():
                 else:
                     try:
                         bulk_delete_source_records(selected_ids)
+                        _clear_data_record_read_caches()
                         st.success("Selected source rows deleted.")
                         st.rerun()
                     except Exception as e:
@@ -1546,7 +1599,7 @@ def render_raw_records():
         )
         offset = (int(page_number) - 1) * int(page_size)
         print(f"[form-perf] presence raw rows before render total_rows={total_rows} page_size={page_size} page={int(page_number)}", flush=True)
-        presence_df = get_all_presence_records(project_id=project_id, limit=int(page_size), offset=offset)
+        presence_df = _cached_presence_records_page(project_id=project_id, limit=int(page_size), offset=offset)
         if presence_df.empty:
             st.info("No presence data yet.")
         else:
@@ -1579,6 +1632,7 @@ def render_raw_records():
                 else:
                     try:
                         bulk_delete_presence_records(selected_ids)
+                        _clear_data_record_read_caches()
                         st.success("Selected presence rows deleted.")
                         st.rerun()
                     except Exception as e:

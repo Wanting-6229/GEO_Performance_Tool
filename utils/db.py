@@ -3,10 +3,12 @@ import sqlite3
 import time
 import uuid
 import re
+from threading import Lock, local
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 
 import pandas as pd
+import streamlit as st
 
 try:
     import psycopg
@@ -324,27 +326,102 @@ class ConnectionCompat:
         return getattr(self._conn, name)
 
 
-def get_connection():
-    backend = get_db_backend()
-    if backend == "postgres":
-        if psycopg is None:
-            raise RuntimeError("PostgreSQL backend requested but psycopg is not installed.")
-        conn = psycopg.connect(_normalize_postgres_dsn(get_database_url()))
-        return ConnectionCompat(conn, backend="postgres")
+class ManagedConnection(ConnectionCompat):
+    @property
+    def raw_connection(self):
+        return self._conn
 
-    conn = sqlite3.connect(_get_sqlite_path(), check_same_thread=False)
-    conn.execute("PRAGMA foreign_keys = ON;")
-    return conn
+    def close(self):
+        try:
+            self.rollback()
+        except Exception:
+            pass
+        return None
+
+
+class DbEngine:
+    def __init__(self, backend: str, target: str):
+        self.backend = backend
+        self.target = target
+        self._lock = Lock()
+        self._thread_local = local()
+
+    def _create_raw_connection(self):
+        if self.backend == "postgres":
+            if psycopg is None:
+                raise RuntimeError("PostgreSQL backend requested but psycopg is not installed.")
+            return psycopg.connect(self.target)
+
+        conn = sqlite3.connect(self.target, check_same_thread=False)
+        conn.execute("PRAGMA foreign_keys = ON;")
+        return conn
+
+    def _connection_is_alive(self, conn) -> bool:
+        try:
+            if self.backend == "postgres":
+                if getattr(conn, "closed", False):
+                    return False
+                cursor = conn.cursor()
+                cursor.execute("SELECT 1")
+                cursor.fetchone()
+                cursor.close()
+                return True
+
+            conn.execute("SELECT 1")
+            return True
+        except Exception:
+            return False
+
+    def _get_or_create_connection(self):
+        conn = getattr(self._thread_local, "conn", None)
+        if conn is not None and self._connection_is_alive(conn):
+            return conn
+
+        with self._lock:
+            conn = getattr(self._thread_local, "conn", None)
+            if conn is None or not self._connection_is_alive(conn):
+                conn = self._create_raw_connection()
+                self._thread_local.conn = conn
+        return conn
+
+    def connect(self):
+        return ManagedConnection(self._get_or_create_connection(), backend=self.backend)
+
+
+@st.cache_resource(show_spinner=False)
+def _build_cached_db_engine(backend: str, target: str):
+    return DbEngine(backend=backend, target=target)
+
+
+def get_engine():
+    backend = get_db_backend()
+    target = _normalize_postgres_dsn(get_database_url()) if backend == "postgres" else _get_sqlite_path()
+    return _build_cached_db_engine(backend=backend, target=target)
+
+
+def get_db_engine():
+    return get_engine()
+
+
+def get_db_connection():
+    return get_engine().connect()
+
+
+def get_connection():
+    return get_db_connection()
 
 
 def _read_sql_query(sql: str, conn, params: Optional[List[Any]] = None) -> pd.DataFrame:
-    if isinstance(conn, ConnectionCompat) and conn.backend == "postgres":
+    backend = getattr(conn, "backend", "")
+    if backend == "postgres":
         cursor = conn.cursor()
         cursor.execute(sql, params or [])
         rows = cursor.fetchall()
         columns = [desc[0] for desc in cursor.description] if cursor.description else []
         return pd.DataFrame(rows, columns=columns)
-    return pd.read_sql_query(sql, conn, params=params)
+
+    raw_conn = getattr(conn, "raw_connection", conn)
+    return pd.read_sql_query(sql, raw_conn, params=params)
 
 
 # =========================================================
