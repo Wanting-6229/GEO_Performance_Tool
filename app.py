@@ -94,8 +94,8 @@ if "data_record_section" not in st.session_state:
 if "raw_data_section" not in st.session_state:
     st.session_state.raw_data_section = "Presence Master Table"
 
-if "data_entry_section" not in st.session_state:
-    st.session_state.data_entry_section = "Manual Entry"
+if "entry_section" not in st.session_state:
+    st.session_state.entry_section = "Manual Entry"
 
 
 # =========================================================

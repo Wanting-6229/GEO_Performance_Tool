@@ -151,14 +151,73 @@ def _cached_queries_for_form(project_id: int, active_only: bool):
     return get_all_queries(project_id=project_id, active_only=active_only)
 
 
+@st.cache_data(show_spinner=False)
+def _cached_entry_static_options():
+    return {
+        "months": tuple(MONTHS),
+        "platforms": tuple(PLATFORMS),
+        "sections": ("Manual Entry", "Excel Upload"),
+    }
+
+
+@st.cache_data(show_spinner=False, ttl=60)
+def _cached_query_info(project_id: int, query_number: str):
+    return get_query_by_number(query_number, project_id=project_id)
+
+
+@st.cache_data(show_spinner=False, ttl=60)
+def _cached_entity_mapping_lookup(project_id: int):
+    mapping_df = get_all_entity_mappings(project_id)
+    if mapping_df is None or mapping_df.empty:
+        return {}
+
+    return {
+        _norm(row.get("entity_name_cn", "")): _norm(row.get("entity_name_en", ""))
+        for _, row in mapping_df.iterrows()
+        if _norm(row.get("entity_name_cn", ""))
+    }
+
+
+@st.cache_data(show_spinner=False, ttl=60)
+def _cached_source_mapping_lookup(project_id: int):
+    mapping_df = get_all_source_mappings(project_id)
+    if mapping_df is None or mapping_df.empty:
+        return {}
+
+    return {
+        _norm(row.get("source_name", "")): _norm(row.get("source_url", ""))
+        for _, row in mapping_df.iterrows()
+        if _norm(row.get("source_name", ""))
+    }
+
+
 def _set_monthly_import_feedback(message_type: str, message: str):
     st.session_state.monthly_import_result_type = message_type
     st.session_state.monthly_import_result_message = message
 
 
+def _set_manual_entry_feedback(message_type: str, message: str):
+    st.session_state.manual_entry_result_type = message_type
+    st.session_state.manual_entry_result_message = message
+
+
 def _render_monthly_import_feedback():
     message = st.session_state.get("monthly_import_result_message", "")
     message_type = st.session_state.get("monthly_import_result_type", "")
+    if not message or not message_type:
+        return
+
+    if message_type == "success":
+        st.success(message)
+    elif message_type == "warning":
+        st.warning(message)
+    else:
+        st.info(message)
+
+
+def _render_manual_entry_feedback():
+    message = st.session_state.get("manual_entry_result_message", "")
+    message_type = st.session_state.get("manual_entry_result_type", "")
     if not message or not message_type:
         return
 
@@ -343,6 +402,11 @@ def _init_editor_state():
         st.session_state.manual_source_records = []
 
 
+def _init_entry_section_state():
+    if "entry_section" not in st.session_state:
+        st.session_state.entry_section = "Manual Entry"
+
+
 def _reset_presence_form():
     st.session_state.reset_presence_form = True
 
@@ -503,36 +567,12 @@ def _render_query_info_card(query_info: dict):
         st.text_input("Query Name EN", value=query_info.get("query_name_en", ""), disabled=True)
         st.text_input("Product Category", value=query_info.get("product_category", ""), disabled=True)
 
-def _presence_form_autofill_en():
-    project_id = _current_project_id()
-    if project_id is None:
-        return
-
-    cn = _norm(st.session_state.get("presence_form_entity_name_cn", ""))
-    current_en = _norm(st.session_state.get("presence_form_entity_name_en", ""))
-    if not cn:
-        st.session_state.presence_form_entity_name_en = ""
-        return
-
-    mapped_en = get_entity_name_en(project_id, cn)
-    if mapped_en and not current_en:
-        st.session_state.presence_form_entity_name_en = mapped_en
+def _get_mapped_entity_name_en(project_id: int, entity_name_cn: str) -> str:
+    return _cached_entity_mapping_lookup(project_id).get(_norm(entity_name_cn), "")
 
 
-def _source_form_autofill_url():
-    project_id = _current_project_id()
-    if project_id is None:
-        return
-
-    source_name = _norm(st.session_state.get("source_form_source_name", ""))
-    current_url = _norm(st.session_state.get("source_form_source_url", ""))
-    if not source_name:
-        st.session_state.source_form_source_url = ""
-        return
-
-    mapped_url = get_source_url(project_id, source_name)
-    if mapped_url and not current_url:
-        st.session_state.source_form_source_url = mapped_url
+def _get_mapped_source_url(project_id: int, source_name: str) -> str:
+    return _cached_source_mapping_lookup(project_id).get(_norm(source_name), "")
 
 
 def _render_presence_records_table():
@@ -610,12 +650,14 @@ def render_manual_entry():
     st.caption("Record monthly presence and source results based on existing Query Master.")
 
     _init_editor_state()
+    _render_manual_entry_feedback()
 
     project_id = _current_project_id()
     if project_id is None:
         st.info("Please select a project first.")
         return
 
+    static_options = _cached_entry_static_options()
     queries_df = _cached_queries_for_form(project_id=project_id, active_only=True)
     if queries_df.empty:
         st.info("No active query is available. Please create Query Master first in Data Record.")
@@ -625,131 +667,125 @@ def render_manual_entry():
 
     top1, top2, top3, top4 = st.columns(4)
     with top1:
-        record_month = st.selectbox("Record Month", MONTHS, key="manual_record_month")
+        record_month = st.selectbox("Record Month", static_options["months"], key="manual_record_month")
     with top2:
-        ai_platform = st.selectbox("AI Platform", PLATFORMS, key="manual_ai_platform")
+        ai_platform = st.selectbox("AI Platform", static_options["platforms"], key="manual_ai_platform")
     with top3:
         check_date = st.date_input("Check Date", key="manual_check_date")
     with top4:
         created_by = st.text_input("Created By", key="manual_created_by", placeholder="e.g. Alice")
 
     selected_query = st.selectbox("Query Number", query_numbers, key="manual_query_number")
-    query_info = get_query_by_number(selected_query, project_id=project_id)
+    query_info = _cached_query_info(project_id, selected_query)
     _render_query_info_card(query_info)
 
     st.markdown("### Presence Records")
-    p1, p2, p3, p4 = st.columns([2.2, 2.2, 1.2, 1.1])
-    with p1:
-        st.text_input(
-            "Entity Name CN",
-            key="presence_form_entity_name_cn",
-            on_change=_presence_form_autofill_en,
-        )
-    with p2:
-        st.text_input("Entity Name EN", key="presence_form_entity_name_en")
-    with p3:
-        st.text_input("Position", key="presence_form_position")
-    with p4:
-        st.markdown("<div style='height: 1.75rem;'></div>", unsafe_allow_html=True)
-        if st.button("Add", use_container_width=True, key="add_presence_record"):
+    with st.form("presence_record_form", clear_on_submit=True):
+        p1, p2, p3, p4 = st.columns([2.2, 2.2, 1.2, 1.1])
+        with p1:
+            presence_entity_name_cn = st.text_input("Entity Name CN", key="presence_form_entity_name_cn")
+        with p2:
+            presence_entity_name_en = st.text_input("Entity Name EN", key="presence_form_entity_name_en")
+        with p3:
+            presence_position = st.text_input("Position", key="presence_form_position")
+        with p4:
+            st.markdown("<div style='height: 1.75rem;'></div>", unsafe_allow_html=True)
+            add_presence_clicked = st.form_submit_button("Add", use_container_width=True)
+
+        if add_presence_clicked:
             try:
+                resolved_entity_name_cn = _norm(presence_entity_name_cn)
+                resolved_entity_name_en = _norm(presence_entity_name_en) or _get_mapped_entity_name_en(project_id, resolved_entity_name_cn)
+                if resolved_entity_name_cn and not resolved_entity_name_en:
+                    raise ValueError(f"Unmapped entity: {resolved_entity_name_cn}")
+
                 presence_row = _clean_presence_rows(pd.DataFrame([{
-                    "entity_name_cn": st.session_state.get("presence_form_entity_name_cn", ""),
-                    "entity_name_en": st.session_state.get("presence_form_entity_name_en", ""),
-                    "position": st.session_state.get("presence_form_position", ""),
+                    "entity_name_cn": resolved_entity_name_cn,
+                    "entity_name_en": resolved_entity_name_en,
+                    "position": presence_position,
                 }]))
                 st.session_state.manual_presence_records.extend(presence_row)
-                _reset_presence_form()
-                st.rerun()
             except Exception as e:
                 st.error(str(e))
-
-    current_presence_cn = _norm(st.session_state.get("presence_form_entity_name_cn", ""))
-    current_presence_en = _norm(st.session_state.get("presence_form_entity_name_en", ""))
-    if current_presence_cn and not current_presence_en:
-        st.error(f"Unmapped entity: {current_presence_cn}")
 
     _render_presence_records_table()
 
     st.markdown("### Source Records")
-    s1, s2, s3, s4, s5, s6 = st.columns([2.0, 2.0, 1.3, 1.3, 1.8, 1.0])
-    with s1:
-        st.text_input(
-            "Source Name",
-            key="source_form_source_name",
-            on_change=_source_form_autofill_url,
-        )
-    with s2:
-        st.text_input("Source URL", key="source_form_source_url")
-    with s3:
-        st.text_input("Occurrence Number", key="source_form_occurrence_number")
-    with s4:
-        st.selectbox("Quoted Or Not", options=["", "Y", "N"], key="source_form_quoted_or_not")
-    with s5:
-        st.text_input("Quoted URL", key="source_form_quoted_url")
-    with s6:
-        st.markdown("<div style='height: 1.75rem;'></div>", unsafe_allow_html=True)
-        if st.button("Add", use_container_width=True, key="add_source_record"):
+    with st.form("source_record_form", clear_on_submit=True):
+        s1, s2, s3, s4, s5, s6 = st.columns([2.0, 2.0, 1.3, 1.3, 1.8, 1.0])
+        with s1:
+            source_name = st.text_input("Source Name", key="source_form_source_name")
+        with s2:
+            source_url = st.text_input("Source URL", key="source_form_source_url")
+        with s3:
+            occurrence_number = st.text_input("Occurrence Number", key="source_form_occurrence_number")
+        with s4:
+            quoted_or_not = st.selectbox("Quoted Or Not", options=["", "Y", "N"], key="source_form_quoted_or_not")
+        with s5:
+            quoted_url = st.text_input("Quoted URL", key="source_form_quoted_url")
+        with s6:
+            st.markdown("<div style='height: 1.75rem;'></div>", unsafe_allow_html=True)
+            add_source_clicked = st.form_submit_button("Add", use_container_width=True)
+
+        if add_source_clicked:
             try:
+                resolved_source_name = _norm(source_name)
+                resolved_source_url = _norm(source_url) or _get_mapped_source_url(project_id, resolved_source_name)
+                if resolved_source_name and not resolved_source_url:
+                    raise ValueError(f"Unmapped source: {resolved_source_name}")
+
                 source_row = _clean_source_rows(pd.DataFrame([{
-                    "source_name": st.session_state.get("source_form_source_name", ""),
-                    "source_url": st.session_state.get("source_form_source_url", ""),
-                    "occurrence_number": st.session_state.get("source_form_occurrence_number", ""),
-                    "quoted_or_not": st.session_state.get("source_form_quoted_or_not", ""),
-                    "quoted_url": st.session_state.get("source_form_quoted_url", ""),
+                    "source_name": resolved_source_name,
+                    "source_url": resolved_source_url,
+                    "occurrence_number": occurrence_number,
+                    "quoted_or_not": quoted_or_not,
+                    "quoted_url": quoted_url,
                 }]))
                 st.session_state.manual_source_records.extend(source_row)
-                _reset_source_form()
-                st.rerun()
             except Exception as e:
                 st.error(str(e))
 
-    current_source_name = _norm(st.session_state.get("source_form_source_name", ""))
-    current_source_url = _norm(st.session_state.get("source_form_source_url", ""))
-    if current_source_name and not current_source_url:
-        st.error(f"Unmapped source: {current_source_name}")
-
     _render_source_records_table()
 
-    notes = st.text_area("Submission Notes", placeholder="Optional notes...")
+    with st.form("manual_submission_form"):
+        notes = st.text_area("Submission Notes", key="manual_submission_notes", placeholder="Optional notes...")
 
-    c1, c2 = st.columns([1, 1])
-    with c1:
-        save_clicked = st.button("Save Submission", type="primary", use_container_width=True)
-    with c2:
-        clear_clicked = st.button("Clear Tables", use_container_width=True)
+        c1, c2 = st.columns([1, 1])
+        with c1:
+            save_clicked = st.form_submit_button("Save Submission", type="primary", use_container_width=True)
+        with c2:
+            clear_clicked = st.form_submit_button("Clear Tables", use_container_width=True)
 
-    if clear_clicked:
-        _reset_editor_state()
-        st.success("Entry tables cleared.")
-        st.rerun()
-
-    if save_clicked:
-        try:
-            if not _norm(created_by):
-                st.error("Created By is required.")
-                return
-
-            presence_rows = _clean_presence_rows(pd.DataFrame(st.session_state.get("manual_presence_records", [])))
-            source_rows = _clean_source_rows(pd.DataFrame(st.session_state.get("manual_source_records", [])))
-
-            submission_id = save_manual_submission(
-                project_id=project_id,
-                query_number=selected_query,
-                record_month=record_month,
-                ai_platform=ai_platform,
-                check_date=str(check_date),
-                created_by=_norm(created_by),
-                presence_rows=presence_rows,
-                source_rows=source_rows,
-                notes=_norm(notes),
-            )
-
+        if clear_clicked:
             _reset_editor_state()
-            st.success(f"Submission saved successfully: {submission_id}")
+            _set_manual_entry_feedback("success", "Entry tables cleared.")
+            st.rerun()
 
-        except Exception as e:
-            st.error(f"Failed to save submission: {e}")
+        if save_clicked:
+            try:
+                if not _norm(created_by):
+                    st.error("Created By is required.")
+                else:
+                    presence_rows = _clean_presence_rows(pd.DataFrame(st.session_state.get("manual_presence_records", [])))
+                    source_rows = _clean_source_rows(pd.DataFrame(st.session_state.get("manual_source_records", [])))
+
+                    submission_id = save_manual_submission(
+                        project_id=project_id,
+                        query_number=selected_query,
+                        record_month=record_month,
+                        ai_platform=ai_platform,
+                        check_date=str(check_date),
+                        created_by=_norm(created_by),
+                        presence_rows=presence_rows,
+                        source_rows=source_rows,
+                        notes=_norm(notes),
+                    )
+
+                    _reset_editor_state()
+                    _set_manual_entry_feedback("success", f"Submission saved successfully: {submission_id}")
+                    st.rerun()
+            except Exception as e:
+                st.error(f"Failed to save submission: {e}")
 
     _log_form_perf("manual entry render", manual_entry_start, project_id=int(project_id), active_queries=len(queries_df))
 
@@ -770,72 +806,79 @@ def render_excel_upload():
         "download_monthly_template",
     )
 
-    uploaded_file = st.file_uploader(
-        "Upload Monthly Result Excel",
-        type=["xlsx"],
-        key="monthly_result_upload",
-    )
-
     _render_monthly_import_feedback()
 
-    if uploaded_file is not None:
-        if st.button("Import Monthly Result Excel", type="primary"):
-            try:
-                result = import_monthly_results_excel(uploaded_file, project_id=project_id)
-                inserted_submissions = int(result.get("submissions", 0))
-                inserted_presence = int(result.get("presence_records", 0))
-                inserted_source = int(result.get("source_records", 0))
-                updated_submissions = int(result.get("updated_submissions", 0))
-                updated_presence = int(result.get("updated_presence_records", 0))
-                updated_source = int(result.get("updated_source_records", 0))
-                skipped_submissions = int(result.get("skipped_duplicate_submissions", 0))
-                skipped_presence = int(result.get("skipped_duplicate_presence_records", 0))
-                skipped_source = int(result.get("skipped_duplicate_source_records", 0))
+    with st.form("monthly_result_upload_form"):
+        uploaded_file = st.file_uploader(
+            "Upload Monthly Result Excel",
+            type=["xlsx"],
+            key="monthly_result_upload",
+        )
+        import_clicked = st.form_submit_button("Import Monthly Result Excel", type="primary")
 
-                wrote_any_data = (inserted_submissions + inserted_presence + inserted_source + updated_submissions + updated_presence + updated_source) > 0
-                skipped_any_duplicates = (skipped_submissions + skipped_presence + skipped_source) > 0
+        if import_clicked:
+            if uploaded_file is None:
+                st.error("Please upload a Monthly Result Excel file first.")
+            else:
+                try:
+                    result = import_monthly_results_excel(uploaded_file, project_id=project_id)
+                    inserted_submissions = int(result.get("submissions", 0))
+                    inserted_presence = int(result.get("presence_records", 0))
+                    inserted_source = int(result.get("source_records", 0))
+                    updated_submissions = int(result.get("updated_submissions", 0))
+                    updated_presence = int(result.get("updated_presence_records", 0))
+                    updated_source = int(result.get("updated_source_records", 0))
+                    skipped_submissions = int(result.get("skipped_duplicate_submissions", 0))
+                    skipped_presence = int(result.get("skipped_duplicate_presence_records", 0))
+                    skipped_source = int(result.get("skipped_duplicate_source_records", 0))
 
-                if wrote_any_data and skipped_any_duplicates:
-                    _set_monthly_import_feedback(
-                        "success",
-                        f"Import completed with duplicates skipped. "
-                        f"Added {inserted_submissions} submissions, {inserted_presence} presence records, {inserted_source} source records. "
-                        f"Skipped {skipped_submissions} duplicate submissions, {skipped_presence} duplicate presence records, {skipped_source} duplicate source records."
-                    )
-                elif wrote_any_data:
-                    if (updated_submissions + updated_presence + updated_source) > 0 and (inserted_submissions + inserted_presence + inserted_source) == 0:
+                    wrote_any_data = (inserted_submissions + inserted_presence + inserted_source + updated_submissions + updated_presence + updated_source) > 0
+                    skipped_any_duplicates = (skipped_submissions + skipped_presence + skipped_source) > 0
+
+                    if wrote_any_data and skipped_any_duplicates:
                         _set_monthly_import_feedback(
                             "success",
-                            f"Import completed. "
-                            f"Updated {updated_submissions} submissions, {updated_presence} presence records, {updated_source} source records."
+                            f"Import completed with duplicates skipped. "
+                            f"Added {inserted_submissions} submissions, {inserted_presence} presence records, {inserted_source} source records. "
+                            f"Skipped {skipped_submissions} duplicate submissions, {skipped_presence} duplicate presence records, {skipped_source} duplicate source records."
                         )
+                    elif wrote_any_data:
+                        if (updated_submissions + updated_presence + updated_source) > 0 and (inserted_submissions + inserted_presence + inserted_source) == 0:
+                            _set_monthly_import_feedback(
+                                "success",
+                                f"Import completed. "
+                                f"Updated {updated_submissions} submissions, {updated_presence} presence records, {updated_source} source records."
+                            )
+                        else:
+                            _set_monthly_import_feedback(
+                                "success",
+                                f"Import successful. "
+                                f"Added {inserted_submissions} submissions, {inserted_presence} presence records, {inserted_source} source records."
+                            )
                     else:
                         _set_monthly_import_feedback(
-                            "success",
-                            f"Import successful. "
-                            f"Added {inserted_submissions} submissions, {inserted_presence} presence records, {inserted_source} source records."
+                            "info",
+                            "No new data imported. All uploaded records already exist.",
                         )
-                else:
-                    _set_monthly_import_feedback(
-                        "info",
-                        "No new data imported. All uploaded records already exist.",
-                )
-                st.rerun()
-            except Exception as e:
-                _set_monthly_import_feedback("warning", f"Import failed: {e}")
-                st.error(f"Import failed: {e}")
+                    st.rerun()
+                except Exception as e:
+                    _set_monthly_import_feedback("warning", f"Import failed: {e}")
+                    st.error(f"Import failed: {e}")
 
 
 def render_data_entry_page():
-    section = st.segmented_control(
+    _init_entry_section_state()
+    static_options = _cached_entry_static_options()
+
+    st.segmented_control(
         "Data Entry Section",
-        options=["Manual Entry", "Excel Upload"],
-        default=st.session_state.get("data_entry_section", "Manual Entry"),
-        key="data_entry_section",
+        options=static_options["sections"],
+        key="entry_section",
         selection_mode="single",
     )
 
-    if section == "Excel Upload":
+    # Only the active section renders so hidden sections do not execute expensive work.
+    if st.session_state.entry_section == "Excel Upload":
         render_excel_upload()
     else:
         render_manual_entry()
@@ -1381,15 +1424,15 @@ def render_raw_records():
     if st.session_state.get("raw_data_section") not in {"Presence Master Table", "Source Master Table"}:
         st.session_state.raw_data_section = "Presence Master Table"
 
-    print(f"[form-state] raw data section before rerun section={st.session_state.get('raw_data_section')} project_id={int(project_id)}", flush=True)
-    raw_section = st.segmented_control(
+    print(f"[section] raw widget before rerun = {st.session_state.get('raw_data_section')} project_id={int(project_id)}", flush=True)
+    st.segmented_control(
         "Raw Data Section",
         options=["Presence Master Table", "Source Master Table"],
         key="raw_data_section",
         selection_mode="single",
     )
-    raw_section = raw_section or st.session_state.get("raw_data_section", "Presence Master Table")
-    print(f"[form-state] raw data section after rerun section={st.session_state.get('raw_data_section')} widget={raw_section} project_id={int(project_id)}", flush=True)
+    raw_section = st.session_state.get("raw_data_section", "Presence Master Table")
+    print(f"[section] raw session_state before render = {st.session_state.get('raw_data_section')} project_id={int(project_id)}", flush=True)
 
     page_size = st.selectbox(
         "Rows Per Page",
@@ -1504,6 +1547,7 @@ def render_raw_records():
                     except Exception as e:
                         st.error(f"Failed to delete presence rows: {e}")
 
+    print(f"[section] rendering raw section = {raw_section} project_id={int(project_id)}", flush=True)
     _log_form_perf("raw records render", raw_records_start, project_id=int(project_id), presence_rows=presence_rows, source_rows=source_rows, section=raw_section, page_size=page_size)
 
 
@@ -1523,8 +1567,8 @@ def render_data_record_page():
     if st.session_state.get("data_record_section") not in valid_sections:
         st.session_state.data_record_section = "Query Master"
 
-    print(f"[form-state] data record section before rerun section={st.session_state.get('data_record_section')} project_id={int(project_id)}", flush=True)
-    section = st.segmented_control(
+    print(f"[section] widget value = {st.session_state.get('data_record_section')} project_id={int(project_id)}", flush=True)
+    st.segmented_control(
         "Data Record Section",
         options=[
             "Query Master",
@@ -1536,9 +1580,9 @@ def render_data_record_page():
         key="data_record_section",
         selection_mode="single",
     )
-    section = section or st.session_state.get("data_record_section", "Query Master")
-    print(f"[form-state] data record section after rerun section={st.session_state.get('data_record_section')} widget={section} project_id={int(project_id)}", flush=True)
-    print(f"[form-perf] data record section selected section={section} project_id={int(project_id)}", flush=True)
+    section = st.session_state.get("data_record_section", "Query Master")
+    print(f"[section] session_state before render = {st.session_state.get('data_record_section')} project_id={int(project_id)}", flush=True)
+    print(f"[section] rendering section = {section} project_id={int(project_id)}", flush=True)
 
     if section == "Entity Mapping":
         render_entity_mapping_manager()
