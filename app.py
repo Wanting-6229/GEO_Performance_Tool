@@ -552,24 +552,34 @@ def section_card_end():
     st.markdown("</div>", unsafe_allow_html=True)
 
 
+def _sync_workspace_page_from_nav():
+    selected_page = st.session_state.get("workspace_page_nav")
+    if selected_page in WORKSPACE_NAV_OPTIONS and selected_page != st.session_state.get("page"):
+        st.session_state.page = selected_page
+
+
 def render_top_nav():
     if not get_current_project():
         return
 
     st.markdown('<div class="nav-shell">', unsafe_allow_html=True)
 
-    current_page = st.session_state.page if st.session_state.page in WORKSPACE_NAV_OPTIONS else "Dashboard"
+    if st.session_state.page not in WORKSPACE_NAV_OPTIONS:
+        st.session_state.page = "Dashboard"
 
-    selected_page = st.segmented_control(
+    if st.session_state.get("workspace_page_nav") != st.session_state.page:
+        st.session_state.workspace_page_nav = st.session_state.page
+
+    # Keep `page` as the single routing source of truth. The nav widget uses a
+    # separate key so a stale widget value cannot overwrite the active page.
+    st.segmented_control(
         "Navigation",
         options=WORKSPACE_NAV_OPTIONS,
-        default=current_page,
+        key="workspace_page_nav",
+        on_change=_sync_workspace_page_from_nav,
         label_visibility="collapsed",
         selection_mode="single",
     )
-
-    if selected_page and selected_page != st.session_state.page:
-        st.session_state.page = selected_page
 
     st.markdown("</div>", unsafe_allow_html=True)
 
