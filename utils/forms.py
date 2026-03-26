@@ -575,6 +575,13 @@ def _get_mapped_source_url(project_id: int, source_name: str) -> str:
     return _cached_source_mapping_lookup(project_id).get(_norm(source_name), "")
 
 
+def _clear_data_entry_read_caches():
+    _cached_queries_for_form.clear()
+    _cached_query_info.clear()
+    _cached_entity_mapping_lookup.clear()
+    _cached_source_mapping_lookup.clear()
+
+
 def _render_presence_records_table():
     records = st.session_state.get("manual_presence_records", [])
     if not records:
@@ -901,7 +908,7 @@ def render_query_master_manager():
         if uploaded_qm is not None and st.button("Import Query Master Excel", use_container_width=True, key="import_query_master_btn"):
             try:
                 result = import_query_master_excel(uploaded_qm, project_id=project_id)
-                _cached_queries_for_form.clear()
+                _clear_data_entry_read_caches()
                 st.success(
                     f"Query Master import successful. "
                     f"Inserted: {result['query_master']}, "
@@ -953,7 +960,7 @@ def render_query_master_manager():
                         publish_month_default=publish_month_default,
                         active=int(active),
                     )
-                    _cached_queries_for_form.clear()
+                    _clear_data_entry_read_caches()
                     st.success("Query Master saved.")
                     st.rerun()
             except Exception as e:
@@ -1017,7 +1024,7 @@ def render_query_master_manager():
                                     query_numbers=selected_query_numbers,
                                 )
                                 st.session_state.show_delete_query_master_confirm = False
-                                _cached_queries_for_form.clear()
+                                _clear_data_entry_read_caches()
                                 st.success(f"Successfully deleted {deleted_count} query record(s).")
                                 st.rerun()
                             except Exception as e:
@@ -1116,7 +1123,7 @@ def render_query_master_manager():
                                 st.error("Please choose at least one field to update.")
                             else:
                                 bulk_update_query_master(selected_query_numbers, update_fields, project_id=project_id)
-                                _cached_queries_for_form.clear()
+                                _clear_data_entry_read_caches()
                                 st.success("Selected Query Master rows updated.")
                                 st.rerun()
 
@@ -1148,7 +1155,7 @@ def render_query_master_manager():
             if st.button("Update Query Status", use_container_width=True):
                 try:
                     set_query_active(selected_query, target_active, project_id=project_id)
-                    _cached_queries_for_form.clear()
+                    _clear_data_entry_read_caches()
                     st.success("Query status updated.")
                     st.rerun()
                 except Exception as e:
@@ -1182,6 +1189,7 @@ def render_entity_mapping_manager():
                         st.error("Both Entity Name CN and Entity Name EN are required.")
                     else:
                         upsert_entity_mapping(project_id, _norm(entity_name_cn), _norm(entity_name_en))
+                        _cached_entity_mapping_lookup.clear()
                         st.success("Entity mapping saved.")
                         st.rerun()
                 except Exception as e:
@@ -1198,6 +1206,7 @@ def render_entity_mapping_manager():
         if uploaded_entity is not None and st.button("Import Entity Mapping Excel", use_container_width=True, key="import_entity_mapping_btn"):
             success, msg = load_entity_mapping_from_excel(project_id=project_id, uploaded_file=uploaded_entity)
             if success:
+                _cached_entity_mapping_lookup.clear()
                 st.success(msg)
                 st.rerun()
             else:
@@ -1248,6 +1257,7 @@ def render_entity_mapping_manager():
                         try:
                             deleted_count = delete_entity_mapping_batch(project_id=project_id, entity_name_cns=selected_entity_names)
                             st.session_state.show_delete_entity_mapping_confirm = False
+                            _cached_entity_mapping_lookup.clear()
                             st.success(f"Successfully deleted {deleted_count} entity mapping record(s).")
                             st.rerun()
                         except Exception as e:
@@ -1285,6 +1295,7 @@ def render_source_mapping_manager():
                         st.error("Both Source Name and Source URL are required.")
                     else:
                         upsert_source_mapping(project_id, _norm(source_name), _norm(source_url))
+                        _cached_source_mapping_lookup.clear()
                         st.success("Source mapping saved.")
                         st.rerun()
                 except Exception as e:
@@ -1301,6 +1312,7 @@ def render_source_mapping_manager():
         if uploaded_source is not None and st.button("Import Source Mapping Excel", use_container_width=True, key="import_source_mapping_btn"):
             success, msg = load_source_mapping_from_excel(project_id=project_id, uploaded_file=uploaded_source)
             if success:
+                _cached_source_mapping_lookup.clear()
                 st.success(msg)
                 st.rerun()
             else:
@@ -1351,6 +1363,7 @@ def render_source_mapping_manager():
                         try:
                             deleted_count = delete_source_mapping_batch(project_id=project_id, source_names=selected_source_names)
                             st.session_state.show_delete_source_mapping_confirm = False
+                            _cached_source_mapping_lookup.clear()
                             st.success(f"Successfully deleted {deleted_count} source mapping record(s).")
                             st.rerun()
                         except Exception as e:
