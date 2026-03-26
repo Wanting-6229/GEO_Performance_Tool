@@ -407,6 +407,26 @@ def _init_entry_section_state():
         st.session_state.entry_section = "Manual Entry"
 
 
+def _sync_data_record_section_from_nav():
+    selected_section = st.session_state.get("data_record_section_nav")
+    valid_sections = {
+        "Query Master",
+        "Entity Mapping",
+        "Source Mapping",
+        "Submission Manager",
+        "Raw Data",
+    }
+    if selected_section in valid_sections and selected_section != st.session_state.get("data_record_section"):
+        st.session_state.data_record_section = selected_section
+
+
+def _sync_raw_data_section_from_nav():
+    selected_section = st.session_state.get("raw_data_section_nav")
+    valid_sections = {"Presence Master Table", "Source Master Table"}
+    if selected_section in valid_sections and selected_section != st.session_state.get("raw_data_section"):
+        st.session_state.raw_data_section = selected_section
+
+
 def _reset_presence_form():
     st.session_state.reset_presence_form = True
 
@@ -1437,11 +1457,15 @@ def render_raw_records():
     if st.session_state.get("raw_data_section") not in {"Presence Master Table", "Source Master Table"}:
         st.session_state.raw_data_section = "Presence Master Table"
 
+    if st.session_state.get("raw_data_section_nav") not in {"Presence Master Table", "Source Master Table"}:
+        st.session_state.raw_data_section_nav = st.session_state.raw_data_section
+
     print(f"[section] raw widget before rerun = {st.session_state.get('raw_data_section')} project_id={int(project_id)}", flush=True)
     st.segmented_control(
         "Raw Data Section",
         options=["Presence Master Table", "Source Master Table"],
-        key="raw_data_section",
+        key="raw_data_section_nav",
+        on_change=_sync_raw_data_section_from_nav,
         selection_mode="single",
     )
     raw_section = st.session_state.get("raw_data_section", "Presence Master Table")
@@ -1580,6 +1604,9 @@ def render_data_record_page():
     if st.session_state.get("data_record_section") not in valid_sections:
         st.session_state.data_record_section = "Query Master"
 
+    if st.session_state.get("data_record_section_nav") not in valid_sections:
+        st.session_state.data_record_section_nav = st.session_state.data_record_section
+
     print(f"[section] widget value = {st.session_state.get('data_record_section')} project_id={int(project_id)}", flush=True)
     st.segmented_control(
         "Data Record Section",
@@ -1590,7 +1617,8 @@ def render_data_record_page():
             "Submission Manager",
             "Raw Data",
         ],
-        key="data_record_section",
+        key="data_record_section_nav",
+        on_change=_sync_data_record_section_from_nav,
         selection_mode="single",
     )
     section = st.session_state.get("data_record_section", "Query Master")
