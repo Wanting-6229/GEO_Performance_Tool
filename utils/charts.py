@@ -9,29 +9,58 @@ from utils.metrics import (
     get_brand_visibility_by_category,
     get_brand_visibility_by_category_and_publish_month,
     get_brand_visibility_by_publish_month,
+    get_brand_visibility_by_record_month,
     get_source_occurrence_ranking,
+    get_source_platform_comparison,
     get_source_distribution_by_platform,
     get_quoted_source_ranking,
     get_query_count_by_publish_month,
 )
 
 
-BI_PRIMARY = "#6ea8fe"
-BI_SECONDARY = "#9bc2ff"
-BI_ACCENT = "#6fc4c0"
-BI_WARM = "#f2b880"
-BI_MUTED = "#b7c7e6"
-BI_GRID = "rgba(110, 168, 254, 0.16)"
+BI_PRIMARY = "#2e1452"
+BI_SECONDARY = "#4a2a7a"
+BI_ACCENT = "#2bd6d9"
+BI_WARM = "#5ee0e2"
+BI_MUTED = "#8a9aaa"
+BI_GRID = "rgba(46, 20, 82, 0.10)"
 BI_PAPER = "#ffffff"
-BI_FONT = "#334155"
+BI_PLOT = "#f8f9fc"
+BI_FONT = "#2d2d2d"
+BI_FONT_MUTED = "#6c7a89"
+BI_HOVER_BG = "#f8f9fc"
+BI_HOVER_BORDER = "rgba(43, 214, 217, 0.24)"
+BI_LINE = "rgba(224, 229, 234, 0.95)"
+BI_BAR_BORDER = "rgba(46, 20, 82, 0.10)"
+BI_PLATFORM_SEQ = ["#2f80ed", "#f2c94c", "#56ccf2", "#f2994a", "#1c4fd7", "#b8860b"]
+BI_SOURCE_BAR_SOFT = "#ecf8f9"
+BI_SOURCE_BAR_HIGHLIGHT = "#ff7a59"
+BI_LINE_SEQ = [
+    "#1d4ed8",
+    "#f59e0b",
+    "#0ea5e9",
+    "#10b981",
+    "#ef4444",
+    "#8b5cf6",
+    "#f97316",
+    "#14b8a6",
+    "#ec4899",
+    "#64748b",
+    "#2563eb",
+    "#ca8a04",
+    "#059669",
+    "#dc2626",
+    "#7c3aed",
+    "#0891b2",
+]
 BI_SEQ = [
-    "#6ea8fe",
-    "#9bc2ff",
-    "#6fc4c0",
-    "#a8bdf0",
-    "#c6d4ee",
-    "#f2b880",
-    "#b8c4d6",
+    "#2e1452",
+    "#4a2a7a",
+    "#2bd6d9",
+    "#5ee0e2",
+    "#23b8bb",
+    "#8a9aaa",
+    "#3498db",
 ]
 
 
@@ -48,7 +77,7 @@ def _empty_fig(title: str = "No data available"):
         xaxis=dict(visible=False),
         yaxis=dict(visible=False),
         paper_bgcolor=BI_PAPER,
-        plot_bgcolor=BI_PAPER,
+        plot_bgcolor=BI_PLOT,
         annotations=[
             dict(
                 text="No data available",
@@ -72,13 +101,13 @@ def _apply_layout(fig, title: str = "", height: int = 420):
         margin=dict(l=18, r=18, t=58, b=18),
         legend_title_text="",
         paper_bgcolor=BI_PAPER,
-        plot_bgcolor=BI_PAPER,
+        plot_bgcolor=BI_PLOT,
         font=dict(color=BI_FONT),
         colorway=BI_SEQ,
-        title_font=dict(size=18, color="#334155"),
+        title_font=dict(size=18, color=BI_PRIMARY),
         hoverlabel=dict(
-            bgcolor="#fbfdff",
-            bordercolor="rgba(110, 168, 254, 0.22)",
+            bgcolor=BI_HOVER_BG,
+            bordercolor=BI_HOVER_BORDER,
             font=dict(color=BI_FONT),
         ),
     )
@@ -86,16 +115,16 @@ def _apply_layout(fig, title: str = "", height: int = 420):
         showgrid=True,
         gridcolor=BI_GRID,
         zeroline=False,
-        linecolor="rgba(148, 163, 184, 0.22)",
-        tickfont=dict(color="#64748b"),
-        title_font=dict(color="#64748b"),
+        linecolor=BI_LINE,
+        tickfont=dict(color=BI_FONT_MUTED),
+        title_font=dict(color=BI_FONT_MUTED),
     )
     fig.update_yaxes(
         showgrid=False,
         zeroline=False,
-        linecolor="rgba(148, 163, 184, 0.22)",
-        tickfont=dict(color="#64748b"),
-        title_font=dict(color="#64748b"),
+        linecolor=BI_LINE,
+        tickfont=dict(color=BI_FONT_MUTED),
+        title_font=dict(color=BI_FONT_MUTED),
     )
     return fig
 
@@ -147,8 +176,12 @@ def _sort_month_df(df: pd.DataFrame, month_col: str):
 # =========================================================
 # KPI Cards Data
 # =========================================================
-def get_kpi_cards_data(presence_df: pd.DataFrame, source_df: pd.DataFrame) -> dict:
-    kpis = compute_kpis(presence_df, source_df)
+def get_kpi_cards_data(
+    presence_df: pd.DataFrame,
+    source_df: pd.DataFrame,
+    content_publish_df: pd.DataFrame | None = None,
+) -> dict:
+    kpis = compute_kpis(presence_df, source_df, content_publish_df)
     return {
         "Total Query": kpis.get("total_queries", 0),
         "source occurance": kpis.get("source_occurance", 0),
@@ -183,7 +216,7 @@ def build_brand_ranking_chart(presence_df: pd.DataFrame, top_n: int = 10):
 
     fig.update_traces(
         textposition="outside",
-        marker_line_color="rgba(20, 30, 60, 0.08)",
+        marker_line_color=BI_BAR_BORDER,
         marker_line_width=1.2,
     )
     fig.update_yaxes(categoryorder="total ascending")
@@ -211,7 +244,7 @@ def build_brand_ranking_chart_from_table(ranking_df: pd.DataFrame, top_n: int = 
     )
     fig.update_traces(
         textposition="outside",
-        marker_line_color="rgba(20, 30, 60, 0.08)",
+        marker_line_color=BI_BAR_BORDER,
         marker_line_width=1.2,
     )
     fig.update_yaxes(categoryorder="total ascending")
@@ -241,7 +274,7 @@ def build_channel_ranking_chart(presence_df: pd.DataFrame, top_n: int = 10):
 
     fig.update_traces(
         textposition="outside",
-        marker_line_color="rgba(20, 30, 60, 0.08)",
+        marker_line_color=BI_BAR_BORDER,
         marker_line_width=1.2,
     )
     fig.update_yaxes(categoryorder="total ascending")
@@ -268,7 +301,7 @@ def build_channel_ranking_chart_from_table(ranking_df: pd.DataFrame, top_n: int 
     )
     fig.update_traces(
         textposition="outside",
-        marker_line_color="rgba(20, 30, 60, 0.08)",
+        marker_line_color=BI_BAR_BORDER,
         marker_line_width=1.2,
     )
     fig.update_yaxes(categoryorder="total ascending")
@@ -284,27 +317,7 @@ def build_source_occurrence_chart(source_df: pd.DataFrame, top_n: int = 10):
         return _empty_fig("Source Occurance")
 
     chart_df = ranking_df.head(top_n).copy()
-
-    fig = px.bar(
-        chart_df,
-        x="source occurance",
-        y="Source",
-        orientation="h",
-        text="source occurance",
-        color_discrete_sequence=[BI_ACCENT],
-        hover_data={
-            "Source": True,
-            "source occurance": True,
-        },
-    )
-
-    fig.update_traces(
-        textposition="outside",
-        marker_line_color="rgba(20, 30, 60, 0.08)",
-        marker_line_width=1.2,
-    )
-    fig.update_yaxes(categoryorder="total ascending")
-    return _apply_layout(fig, "Source Occurance")
+    return build_source_occurrence_chart_from_table(chart_df, top_n=top_n)
 
 
 def build_source_occurrence_chart_from_table(ranking_df: pd.DataFrame, top_n: int = 10):
@@ -312,25 +325,73 @@ def build_source_occurrence_chart_from_table(ranking_df: pd.DataFrame, top_n: in
         return _empty_fig("Source Occurance")
 
     chart_df = ranking_df.head(top_n).copy()
-    fig = px.bar(
-        chart_df,
-        x="source occurance",
-        y="Source",
-        orientation="h",
-        text="source occurance",
-        color_discrete_sequence=[BI_ACCENT],
-        hover_data={
-            "Source": True,
-            "source occurance": True,
-        },
+    chart_df = chart_df.sort_values("source occurance", ascending=False).reset_index(drop=True)
+
+    highlight_idx = int(chart_df["source occurance"].astype(float).idxmax()) if not chart_df.empty else -1
+    bar_colors = [
+        BI_SOURCE_BAR_HIGHLIGHT if idx == highlight_idx else BI_SOURCE_BAR_SOFT
+        for idx in chart_df.index
+    ]
+
+    fig = go.Figure(
+        data=[
+            go.Bar(
+                x=chart_df["Source"],
+                y=chart_df["source occurance"],
+                marker=dict(
+                    color=bar_colors,
+                    line=dict(color=BI_BAR_BORDER, width=1.2),
+                ),
+                hovertemplate="Source=%{x}<br>source occurance=%{y}<extra></extra>",
+            )
+        ]
     )
-    fig.update_traces(
-        textposition="outside",
-        marker_line_color="rgba(20, 30, 60, 0.08)",
-        marker_line_width=1.2,
+
+    for idx, row in chart_df.iterrows():
+        fig.add_annotation(
+            x=row["Source"],
+            y=row["source occurance"],
+            text=str(row["source occurance"]),
+            showarrow=False,
+            yshift=14,
+            font=dict(
+                size=12,
+                color="#ff7a59" if idx == highlight_idx else BI_FONT_MUTED,
+                family="Arial",
+            ),
+        )
+
+    fig.update_layout(
+        title="Source Occurance",
+        height=430,
+        margin=dict(l=20, r=20, t=60, b=76),
+        paper_bgcolor=BI_PAPER,
+        plot_bgcolor=BI_PLOT,
+        font=dict(color=BI_FONT, family="Arial"),
+        hoverlabel=dict(
+            bgcolor=BI_HOVER_BG,
+            bordercolor=BI_HOVER_BORDER,
+            font=dict(color=BI_FONT),
+        ),
+        showlegend=False,
+        bargap=0.34,
+        xaxis=dict(
+            title="",
+            tickfont=dict(color=BI_FONT_MUTED),
+            showgrid=False,
+            linecolor=BI_LINE,
+            zeroline=False,
+        ),
+        yaxis=dict(
+            title="source occurance",
+            title_font=dict(color=BI_FONT_MUTED, size=13),
+            tickfont=dict(color=BI_FONT_MUTED),
+            gridcolor=BI_GRID,
+            zeroline=False,
+            linecolor=BI_LINE,
+        ),
     )
-    fig.update_yaxes(categoryorder="total ascending")
-    return _apply_layout(fig, "Source Occurance")
+    return fig
 
 
 def build_quoted_source_chart(source_df: pd.DataFrame, top_n: int = 10):
@@ -355,7 +416,7 @@ def build_quoted_source_chart(source_df: pd.DataFrame, top_n: int = 10):
 
     fig.update_traces(
         textposition="outside",
-        marker_line_color="rgba(20, 30, 60, 0.08)",
+        marker_line_color=BI_BAR_BORDER,
         marker_line_width=1.2,
     )
     fig.update_yaxes(categoryorder="total ascending")
@@ -381,7 +442,7 @@ def build_quoted_source_chart_from_table(quoted_df: pd.DataFrame, top_n: int = 1
     )
     fig.update_traces(
         textposition="outside",
-        marker_line_color="rgba(20, 30, 60, 0.08)",
+        marker_line_color=BI_BAR_BORDER,
         marker_line_width=1.2,
     )
     fig.update_yaxes(categoryorder="total ascending")
@@ -399,7 +460,8 @@ def build_source_distribution_by_platform_chart(source_df: pd.DataFrame, top_n: 
         y="source occurance",
         color="AI Platform",
         barmode="group",
-        color_discrete_sequence=BI_SEQ,
+        text="source occurance",
+        color_discrete_sequence=BI_PLATFORM_SEQ,
         hover_data={
             "Source": True,
             "AI Platform": True,
@@ -407,7 +469,12 @@ def build_source_distribution_by_platform_chart(source_df: pd.DataFrame, top_n: 
         },
     )
 
-    fig.update_traces(marker_line_color="rgba(20, 30, 60, 0.08)", marker_line_width=1)
+    fig.update_traces(
+        marker_line_color=BI_BAR_BORDER,
+        marker_line_width=1,
+        textposition="outside",
+        cliponaxis=False,
+    )
     fig.update_xaxes(tickangle=-25)
     return _apply_layout(fig, "Source Distribution by Platform", height=460)
 
@@ -422,14 +489,20 @@ def build_source_distribution_by_platform_chart_from_table(distribution_df: pd.D
         y="source occurance",
         color="AI Platform",
         barmode="group",
-        color_discrete_sequence=BI_SEQ,
+        text="source occurance",
+        color_discrete_sequence=BI_PLATFORM_SEQ,
         hover_data={
             "Source": True,
             "AI Platform": True,
             "source occurance": True,
         },
     )
-    fig.update_traces(marker_line_color="rgba(20, 30, 60, 0.08)", marker_line_width=1)
+    fig.update_traces(
+        marker_line_color=BI_BAR_BORDER,
+        marker_line_width=1,
+        textposition="outside",
+        cliponaxis=False,
+    )
     fig.update_xaxes(tickangle=-25)
     return _apply_layout(fig, "Source Distribution by Platform", height=460)
 
@@ -471,7 +544,7 @@ def build_brand_visibility_by_category_chart(
 
     fig.update_traces(
         textposition="outside",
-        marker_line_color="rgba(20, 30, 60, 0.08)",
+        marker_line_color=BI_BAR_BORDER,
         marker_line_width=1.2,
     )
     fig.update_yaxes(categoryorder="total ascending")
@@ -509,7 +582,7 @@ def build_brand_visibility_by_category_chart_from_table(
     )
     fig.update_traces(
         textposition="outside",
-        marker_line_color="rgba(20, 30, 60, 0.08)",
+        marker_line_color=BI_BAR_BORDER,
         marker_line_width=1.2,
     )
     fig.update_yaxes(categoryorder="total ascending")
@@ -551,7 +624,7 @@ def build_brand_visibility_by_category_and_publish_month_chart(
 
     fig.update_traces(
         textposition="outside",
-        marker_line_color="rgba(20, 30, 60, 0.08)",
+        marker_line_color=BI_BAR_BORDER,
         marker_line_width=1.2,
     )
     fig.update_yaxes(categoryorder="total ascending")
@@ -595,7 +668,7 @@ def build_brand_visibility_by_publish_month_chart(
 
     fig.update_traces(
         line=dict(width=3),
-        marker=dict(size=8, line=dict(width=1.5, color="#ffffff")),
+        marker=dict(size=8, line=dict(width=1.5, color=BI_PAPER)),
     )
     return _apply_layout(fig, "Brand Visibility by Publish Month", height=460)
 
@@ -625,9 +698,78 @@ def build_brand_visibility_by_publish_month_chart_from_table(month_df: pd.DataFr
     )
     fig.update_traces(
         line=dict(width=3),
-        marker=dict(size=8, line=dict(width=1.5, color="#ffffff")),
+        marker=dict(size=8, line=dict(width=1.5, color=BI_PAPER)),
     )
     return _apply_layout(fig, "Brand Visibility by Publish Month", height=460)
+
+
+def build_brand_visibility_by_record_month_chart(
+    presence_df: pd.DataFrame,
+    brand: str = "",
+):
+    month_df = get_brand_visibility_by_record_month(presence_df)
+    if month_df.empty:
+        return _empty_fig("Brand Visibility Score by Record Month")
+
+    if brand:
+        month_df = month_df[month_df["Brand"].astype(str).str.strip() == str(brand).strip()].copy()
+
+    if month_df.empty:
+        return _empty_fig("Brand Visibility Score by Record Month")
+
+    month_df = _sort_month_df(month_df, "Record Month")
+    fig = px.line(
+        month_df,
+        x="Record Month",
+        y="Visibility Score",
+        color="Brand" if not brand else None,
+        markers=True,
+        color_discrete_sequence=BI_LINE_SEQ,
+        hover_data={
+            "Record Month": True,
+            "Brand": True if "Brand" in month_df.columns else False,
+            "Covered Queries": True,
+            "Query Pool": True,
+            "Coverage Rate": ":.1%",
+            "Avg Best Position": True,
+            "Visibility Score": True,
+        },
+    )
+    fig.update_traces(
+        line=dict(width=3),
+        marker=dict(size=8, line=dict(width=1.5, color=BI_PAPER)),
+    )
+    return _apply_layout(fig, "Brand Visibility Score by Record Month", height=460)
+
+
+def build_brand_visibility_by_record_month_chart_from_table(month_df: pd.DataFrame):
+    if month_df is None or month_df.empty:
+        return _empty_fig("Brand Visibility Score by Record Month")
+
+    chart_df = _parse_visibility_table(month_df).copy()
+    chart_df = _sort_month_df(chart_df, "Record Month")
+    fig = px.line(
+        chart_df,
+        x="Record Month",
+        y="Visibility Score",
+        color="Brand" if "Brand" in chart_df.columns else None,
+        markers=True,
+        color_discrete_sequence=BI_LINE_SEQ,
+        hover_data={
+            "Record Month": True,
+            "Brand": True if "Brand" in chart_df.columns else False,
+            "Covered Queries": True,
+            "Query Pool": True,
+            "Coverage Rate": ":.1%",
+            "Avg Best Position": True,
+            "Visibility Score": True,
+        },
+    )
+    fig.update_traces(
+        line=dict(width=3),
+        marker=dict(size=8, line=dict(width=1.5, color=BI_PAPER)),
+    )
+    return _apply_layout(fig, "Brand Visibility Score by Record Month", height=460)
 
 
 # =========================================================
@@ -654,10 +796,246 @@ def build_query_count_by_publish_month_chart(queries_df: pd.DataFrame):
 
     fig.update_traces(
         textposition="outside",
-        marker_line_color="rgba(20, 30, 60, 0.08)",
+        marker_line_color=BI_BAR_BORDER,
         marker_line_width=1.2,
     )
     return _apply_layout(fig, "Query Count by Publish Month")
+
+
+def build_brand_presence_ranking_figure(
+    table_df: pd.DataFrame,
+    title: str = "Brand Presence Ranking",
+    top_n: int = 10,
+) -> go.Figure:
+    if table_df is None or table_df.empty:
+        return _empty_fig(title)
+
+    chart_df = table_df.head(top_n).copy().iloc[::-1].reset_index(drop=True)
+    rank_values = list(range(len(chart_df), 0, -1))
+    medals = {1: "🥇", 2: "🥈", 3: "🥉"}
+    rank_labels = [medals.get(rank, f"#{rank}") for rank in rank_values]
+
+    fig = go.Figure()
+    fig.add_trace(
+        go.Bar(
+            y=chart_df["Brand"],
+            x=chart_df["Brand Mention"],
+            orientation="h",
+            text=chart_df["Brand Mention"],
+            textposition="outside",
+            marker=dict(
+                color=BI_ACCENT,
+                line=dict(color=BI_PRIMARY, width=1.5),
+            ),
+            hovertemplate=(
+                "<b>%{y}</b><br>"
+                "Presence Volume: %{x}<br>"
+                "Avg Position: %{customdata[0]:.2f}<br>"
+                "Best Position: %{customdata[1]}<br>"
+                "<extra></extra>"
+            ),
+            customdata=chart_df[["Avg Position", "Best Position"]].values,
+        )
+    )
+
+    for brand, rank_label in zip(chart_df["Brand"], rank_labels):
+        fig.add_annotation(
+            x=0,
+            y=brand,
+            text=rank_label,
+            showarrow=False,
+            xanchor="right",
+            xshift=-10,
+            font=dict(size=16, color=BI_PRIMARY),
+        )
+
+    fig.update_layout(
+        title=dict(text=title, font=dict(size=20, color=BI_PRIMARY), x=0.5, xanchor="center"),
+        template="plotly_white",
+        height=500,
+        margin=dict(l=95, r=60, t=80, b=50),
+        paper_bgcolor=BI_PAPER,
+        plot_bgcolor=BI_PLOT,
+        showlegend=False,
+        bargap=0.3,
+        font=dict(color=BI_FONT),
+    )
+    fig.update_xaxes(
+        title="Presence Volume",
+        title_font=dict(size=14, color=BI_FONT_MUTED),
+        tickfont=dict(color=BI_FONT_MUTED),
+        gridcolor=BI_GRID,
+        zeroline=False,
+        linecolor=BI_LINE,
+    )
+    fig.update_yaxes(
+        title="",
+        tickfont=dict(size=13, color=BI_FONT),
+        automargin=True,
+        showgrid=False,
+        zeroline=False,
+        linecolor=BI_LINE,
+    )
+    return fig
+
+
+def build_brand_visibility_ranking_figure(
+    table_df: pd.DataFrame,
+    title: str = "Brand Visibility Ranking",
+    top_n: int = 10,
+) -> go.Figure:
+    if table_df is None or table_df.empty:
+        return _empty_fig(title)
+
+    chart_df = _parse_visibility_table(table_df).head(top_n).copy().iloc[::-1].reset_index(drop=True)
+    rank_values = list(range(len(chart_df), 0, -1))
+    medals = {1: "🥇", 2: "🥈", 3: "🥉"}
+    rank_labels = [medals.get(rank, f"#{rank}") for rank in rank_values]
+
+    max_score = chart_df["Visibility Score"].max()
+    colors = []
+    for score in chart_df["Visibility Score"]:
+        intensity = score / max_score if max_score and max_score > 0 else 0.5
+        colors.append(f"rgba(43, 214, 217, {0.4 + intensity * 0.6:.3f})")
+
+    fig = go.Figure()
+    fig.add_trace(
+        go.Bar(
+            y=chart_df["Brand"],
+            x=chart_df["Visibility Score"],
+            orientation="h",
+            text=chart_df["Visibility Score"].round(2),
+            textposition="outside",
+            marker=dict(
+                color=colors,
+                line=dict(color=BI_PRIMARY, width=1.5),
+            ),
+            hovertemplate=(
+                "<b>%{y}</b><br>"
+                "Visibility Score: %{x:.2f}<br>"
+                "Coverage Rate: %{customdata[0]:.1%}<br>"
+                "Covered Queries: %{customdata[1]} / %{customdata[2]}<br>"
+                "<extra></extra>"
+            ),
+            customdata=chart_df[["Coverage Rate", "Covered Queries", "Query Pool"]].values,
+        )
+    )
+
+    for brand, rank_label in zip(chart_df["Brand"], rank_labels):
+        fig.add_annotation(
+            x=0,
+            y=brand,
+            text=rank_label,
+            showarrow=False,
+            xanchor="right",
+            xshift=-10,
+            font=dict(size=16, color=BI_PRIMARY),
+        )
+
+    fig.update_layout(
+        title=dict(text=title, font=dict(size=20, color=BI_PRIMARY), x=0.5, xanchor="center"),
+        template="plotly_white",
+        height=500,
+        margin=dict(l=95, r=60, t=80, b=50),
+        paper_bgcolor=BI_PAPER,
+        plot_bgcolor=BI_PLOT,
+        showlegend=False,
+        bargap=0.3,
+        font=dict(color=BI_FONT),
+    )
+    fig.update_xaxes(
+        title="Visibility Score",
+        title_font=dict(size=14, color=BI_FONT_MUTED),
+        tickfont=dict(color=BI_FONT_MUTED),
+        gridcolor=BI_GRID,
+        zeroline=False,
+        linecolor=BI_LINE,
+    )
+    fig.update_yaxes(
+        title="",
+        tickfont=dict(size=13, color=BI_FONT),
+        automargin=True,
+        showgrid=False,
+        zeroline=False,
+        linecolor=BI_LINE,
+    )
+    return fig
+
+
+def build_channel_ranking_figure(
+    table_df: pd.DataFrame,
+    title: str = "Channel Ranking",
+    top_n: int = 10,
+) -> go.Figure:
+    if table_df is None or table_df.empty:
+        return _empty_fig(title)
+
+    chart_df = table_df.head(top_n).copy().iloc[::-1].reset_index(drop=True)
+    rank_values = list(range(len(chart_df), 0, -1))
+    medals = {1: "🥇", 2: "🥈", 3: "🥉"}
+    rank_labels = [medals.get(rank, f"#{rank}") for rank in rank_values]
+
+    fig = go.Figure()
+    fig.add_trace(
+        go.Bar(
+            y=chart_df["Channel"],
+            x=chart_df["Channel Mention"],
+            orientation="h",
+            text=chart_df["Channel Mention"],
+            textposition="outside",
+            marker=dict(
+                color=BI_WARM,
+                line=dict(color=BI_PRIMARY, width=1.5),
+            ),
+            hovertemplate=(
+                "<b>%{y}</b><br>"
+                "Channel Mention: %{x}<br>"
+                "Avg Position: %{customdata[0]:.2f}<br>"
+                "<extra></extra>"
+            ),
+            customdata=chart_df[["Avg Position"]].values,
+        )
+    )
+
+    for channel, rank_label in zip(chart_df["Channel"], rank_labels):
+        fig.add_annotation(
+            x=0,
+            y=channel,
+            text=rank_label,
+            showarrow=False,
+            xanchor="right",
+            xshift=-10,
+            font=dict(size=16, color=BI_PRIMARY),
+        )
+
+    fig.update_layout(
+        title=dict(text=title, font=dict(size=20, color=BI_PRIMARY), x=0.5, xanchor="center"),
+        template="plotly_white",
+        height=450,
+        margin=dict(l=95, r=60, t=80, b=50),
+        paper_bgcolor=BI_PAPER,
+        plot_bgcolor=BI_PLOT,
+        showlegend=False,
+        bargap=0.3,
+        font=dict(color=BI_FONT),
+    )
+    fig.update_xaxes(
+        title="Channel Mention",
+        title_font=dict(size=14, color=BI_FONT_MUTED),
+        tickfont=dict(color=BI_FONT_MUTED),
+        gridcolor=BI_GRID,
+        zeroline=False,
+        linecolor=BI_LINE,
+    )
+    fig.update_yaxes(
+        title="",
+        tickfont=dict(size=13, color=BI_FONT),
+        automargin=True,
+        showgrid=False,
+        zeroline=False,
+        linecolor=BI_LINE,
+    )
+    return fig
 
 
 # =========================================================
@@ -722,12 +1100,30 @@ def build_source_distribution_by_platform_table(source_df: pd.DataFrame, top_n: 
     return get_source_distribution_by_platform(source_df, top_n=top_n)
 
 
+def build_source_platform_comparison_tables(
+    source_df: pd.DataFrame,
+    primary_platform: str = "Doubao",
+    secondary_platform: str = "Deepseek",
+    top_n: int = 20,
+) -> dict[str, pd.DataFrame]:
+    return get_source_platform_comparison(
+        source_df,
+        primary_platform=primary_platform,
+        secondary_platform=secondary_platform,
+        top_n=top_n,
+    )
+
+
 def build_query_count_by_publish_month_table(queries_df: pd.DataFrame) -> pd.DataFrame:
     return get_query_count_by_publish_month(queries_df)
 
 
 def build_brand_visibility_by_publish_month_table(presence_df: pd.DataFrame) -> pd.DataFrame:
     return _format_visibility_table(get_brand_visibility_by_publish_month(presence_df))
+
+
+def build_brand_visibility_by_record_month_table(presence_df: pd.DataFrame) -> pd.DataFrame:
+    return _format_visibility_table(get_brand_visibility_by_record_month(presence_df))
 
 
 # =========================================================
@@ -737,6 +1133,7 @@ def build_dashboard_payload(
     queries_df: pd.DataFrame,
     presence_df: pd.DataFrame,
     source_df: pd.DataFrame,
+    content_publish_df: pd.DataFrame | None = None,
     selected_category: str = "",
     selected_publish_month: str = "",
 ):
@@ -744,14 +1141,16 @@ def build_dashboard_payload(
     Return a dict for app.py usage.
     """
     payload = {
-        "kpis": get_kpi_cards_data(presence_df, source_df),
+        "kpis": get_kpi_cards_data(presence_df, source_df, content_publish_df),
         "brand_ranking_table": build_brand_ranking_table(presence_df),
         "channel_ranking_table": build_channel_ranking_table(presence_df),
         "source_occurrence_table": build_source_occurrence_table(source_df),
         "quoted_source_table": build_quoted_source_table(source_df),
         "source_distribution_by_platform_table": build_source_distribution_by_platform_table(source_df),
+        "source_platform_comparison_tables": build_source_platform_comparison_tables(source_df),
         "query_count_by_publish_month_table": build_query_count_by_publish_month_table(queries_df),
         "brand_visibility_by_publish_month_table": build_brand_visibility_by_publish_month_table(presence_df),
+        "brand_visibility_by_record_month_table": build_brand_visibility_by_record_month_table(presence_df),
 
         "brand_ranking_chart": build_brand_ranking_chart(presence_df),
         "channel_ranking_chart": build_channel_ranking_chart(presence_df),
@@ -760,6 +1159,7 @@ def build_dashboard_payload(
         "source_distribution_by_platform_chart": build_source_distribution_by_platform_chart(source_df),
         "query_count_by_publish_month_chart": build_query_count_by_publish_month_chart(queries_df),
         "brand_visibility_by_publish_month_chart": build_brand_visibility_by_publish_month_chart(presence_df),
+        "brand_visibility_by_record_month_chart": build_brand_visibility_by_record_month_chart(presence_df),
     }
 
     if selected_category:

@@ -23,6 +23,7 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DB_NAME = os.path.join(BASE_DIR, "geo_data_v2.db")
 ENTITY_MAPPING_FILE = os.path.join(BASE_DIR, "entity_mapping.xlsx")
 SOURCE_MAPPING_FILE = os.path.join(BASE_DIR, "source_mapping.xlsx")
+CONTENT_PUBLISH_FILE = os.path.join(BASE_DIR, "content_publish.xlsx")
 
 
 # =========================================================
@@ -660,11 +661,16 @@ def _create_entity_mapping_table(cursor: sqlite3.Cursor):
         project_id INTEGER NOT NULL,
         entity_name_cn TEXT NOT NULL,
         entity_name_en TEXT NOT NULL,
+        sinodis_flag TEXT NOT NULL DEFAULT 'N',
         updated_at TEXT NOT NULL,
         UNIQUE(project_id, entity_name_cn),
         FOREIGN KEY (project_id) REFERENCES projects(project_id) ON DELETE CASCADE
     )
     """)
+    cursor.execute("PRAGMA table_info(entity_mapping)")
+    columns = [row[1] for row in cursor.fetchall()]
+    if "sinodis_flag" not in columns:
+        cursor.execute("ALTER TABLE entity_mapping ADD COLUMN sinodis_flag TEXT NOT NULL DEFAULT 'N'")
     cursor.execute("""
     CREATE INDEX IF NOT EXISTS idx_entity_mapping_project
     ON entity_mapping(project_id)
@@ -687,6 +693,53 @@ def _create_source_mapping_table(cursor: sqlite3.Cursor):
     CREATE INDEX IF NOT EXISTS idx_source_mapping_project
     ON source_mapping(project_id)
     """)
+
+
+def _create_content_publish_table(cursor: sqlite3.Cursor):
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS content_publish (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        project_id INTEGER NOT NULL,
+        query_id TEXT NOT NULL,
+        publish_platform TEXT NOT NULL,
+        publish_url TEXT NOT NULL,
+        quoted_or_not TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE(project_id, query_id, publish_platform, publish_url),
+        FOREIGN KEY (project_id) REFERENCES projects(project_id) ON DELETE CASCADE
+    )
+    """)
+    cursor.execute("""
+    CREATE INDEX IF NOT EXISTS idx_content_publish_project
+    ON content_publish(project_id)
+    """)
+
+
+def _ensure_content_publish_table_exists():
+    conn = get_connection()
+    cursor = conn.cursor()
+    if get_db_backend() == "postgres":
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS content_publish (
+            id BIGSERIAL PRIMARY KEY,
+            project_id BIGINT NOT NULL,
+            query_id TEXT NOT NULL,
+            publish_platform TEXT NOT NULL,
+            publish_url TEXT NOT NULL,
+            quoted_or_not TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(project_id, query_id, publish_platform, publish_url),
+            FOREIGN KEY (project_id) REFERENCES projects(project_id) ON DELETE CASCADE
+        )
+        """)
+        cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_content_publish_project
+        ON content_publish(project_id)
+        """)
+    else:
+        _create_content_publish_table(cursor)
+    conn.commit()
+    conn.close()
 
 
 def _migrate_mapping_table(
@@ -902,6 +955,7 @@ def _create_tables_postgres(cursor):
         project_id BIGINT NOT NULL,
         entity_name_cn TEXT NOT NULL,
         entity_name_en TEXT NOT NULL,
+        sinodis_flag TEXT NOT NULL DEFAULT 'N',
         updated_at TEXT NOT NULL,
         UNIQUE(project_id, entity_name_cn),
         FOREIGN KEY (project_id) REFERENCES projects(project_id) ON DELETE CASCADE
@@ -926,6 +980,24 @@ def _create_tables_postgres(cursor):
     cursor.execute("""
     CREATE INDEX IF NOT EXISTS idx_source_mapping_project
     ON source_mapping(project_id)
+    """)
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS content_publish (
+        id BIGSERIAL PRIMARY KEY,
+        project_id BIGINT NOT NULL,
+        query_id TEXT NOT NULL,
+        publish_platform TEXT NOT NULL,
+        publish_url TEXT NOT NULL,
+        quoted_or_not TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE(project_id, query_id, publish_platform, publish_url),
+        FOREIGN KEY (project_id) REFERENCES projects(project_id) ON DELETE CASCADE
+    )
+    """)
+    cursor.execute("""
+    CREATE INDEX IF NOT EXISTS idx_content_publish_project
+    ON content_publish(project_id)
     """)
 
     cursor.execute("""
@@ -1257,6 +1329,7 @@ def create_tables():
         value_column="source_url",
         default_project_id=default_project_id,
     )
+    _create_content_publish_table(cursor)
 
     conn.commit()
     conn.close()
@@ -1523,10 +1596,13 @@ def set_query_active(query_number: str, active: int, project_id: int):
 # =========================================================
 # Entity Mapping
 # =========================================================
-def upsert_entity_mapping(project_id: int, entity_name_cn: str, entity_name_en: str) -> str:
+def upsert_entity_mapping(project_id: int, entity_name_cn: str, entity_name_en: str, sinodis_flag: str = "N") -> str:
     project_id = int(project_id)
     entity_name_cn = normalize_text(entity_name_cn)
     entity_name_en = normalize_text(entity_name_en)
+    sinodis_flag = normalize_text(sinodis_flag).upper()
+    if sinodis_flag not in {"Y", "N"}:
+        sinodis_flag = "N"
     if not entity_name_cn or not entity_name_en:
         return "skipped"
 
@@ -1546,15 +1622,17 @@ def upsert_entity_mapping(project_id: int, entity_name_cn: str, entity_name_en: 
     existing_row = cursor.fetchone()
 
     cursor.execute("""
-    INSERT INTO entity_mapping (project_id, entity_name_cn, entity_name_en, updated_at)
-    VALUES (?, ?, ?, ?)
+    INSERT INTO entity_mapping (project_id, entity_name_cn, entity_name_en, sinodis_flag, updated_at)
+    VALUES (?, ?, ?, ?, ?)
     ON CONFLICT(project_id, entity_name_cn) DO UPDATE SET
         entity_name_en = excluded.entity_name_en,
+        sinodis_flag = excluded.sinodis_flag,
         updated_at = excluded.updated_at
     """, (
         project_id,
         entity_name_cn,
         entity_name_en,
+        sinodis_flag,
         now_ts(),
     ))
 
@@ -1587,7 +1665,7 @@ def get_entity_name_en(project_id: int, entity_name_cn: str) -> str:
 def get_all_entity_mappings(project_id: int) -> pd.DataFrame:
     conn = get_connection()
     df = _read_sql_query("""
-    SELECT entity_name_cn, entity_name_en, updated_at
+    SELECT entity_name_cn, entity_name_en, sinodis_flag, updated_at
     FROM entity_mapping
     WHERE project_id = ?
     ORDER BY entity_name_cn
@@ -1644,7 +1722,7 @@ def load_entity_mapping_from_excel(project_id: int, uploaded_file=None):
         df = pd.read_excel(source)
         df.columns = [str(c).strip() for c in df.columns]
 
-        required_cols = ["entity_name_cn", "entity_name_en"]
+        required_cols = ["entity_name_cn", "entity_name_en", "sinodis_flag"]
         missing = [c for c in required_cols if c not in df.columns]
         if missing:
             return False, f"Missing columns: {', '.join(missing)}"
@@ -1652,14 +1730,21 @@ def load_entity_mapping_from_excel(project_id: int, uploaded_file=None):
         df = df.dropna(subset=required_cols).copy()
         df["entity_name_cn"] = df["entity_name_cn"].astype(str).str.strip()
         df["entity_name_en"] = df["entity_name_en"].astype(str).str.strip()
+        df["sinodis_flag"] = df["sinodis_flag"].astype(str).str.strip().str.upper()
         df = df[(df["entity_name_cn"] != "") & (df["entity_name_en"] != "")]
+        df = df[df["sinodis_flag"].isin(["Y", "N"])]
         df = df.drop_duplicates(subset=["entity_name_cn"], keep="last")
 
         inserted_count = 0
         updated_count = 0
 
         for _, row in df.iterrows():
-            action = upsert_entity_mapping(project_id, row["entity_name_cn"], row["entity_name_en"])
+            action = upsert_entity_mapping(
+                project_id,
+                row["entity_name_cn"],
+                row["entity_name_en"],
+                row["sinodis_flag"],
+            )
             if action == "inserted":
                 inserted_count += 1
             elif action == "updated":
@@ -1811,6 +1896,172 @@ def load_source_mapping_from_excel(project_id: int, uploaded_file=None):
 
         for _, row in df.iterrows():
             action = upsert_source_mapping(project_id, row["source_name"], row["source_url"])
+            if action == "inserted":
+                inserted_count += 1
+            elif action == "updated":
+                updated_count += 1
+
+        return True, f"Successfully uploaded {len(df)} rows. Inserted {inserted_count}, updated {updated_count}."
+
+    except Exception as e:
+        return False, str(e)
+
+
+# =========================================================
+# Content Publish
+# =========================================================
+def upsert_content_publish(
+    project_id: int,
+    query_id: str,
+    publish_platform: str,
+    publish_url: str,
+    quoted_or_not: str,
+) -> str:
+    _ensure_content_publish_table_exists()
+    project_id = int(project_id)
+    query_id = normalize_text(query_id)
+    publish_platform = normalize_text(publish_platform)
+    publish_url = normalize_text(publish_url)
+    quoted_or_not = normalize_text(quoted_or_not).upper()
+    if quoted_or_not not in {"Y", "N"}:
+        quoted_or_not = "N"
+
+    if not query_id or not publish_platform or not publish_url:
+        return "skipped"
+
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        SELECT quoted_or_not
+        FROM content_publish
+        WHERE project_id = ?
+          AND query_id = ?
+          AND publish_platform = ?
+          AND publish_url = ?
+        LIMIT 1
+        """,
+        (project_id, query_id, publish_platform, publish_url),
+    )
+    existing_row = cursor.fetchone()
+
+    cursor.execute(
+        """
+        INSERT INTO content_publish (project_id, query_id, publish_platform, publish_url, quoted_or_not, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(project_id, query_id, publish_platform, publish_url) DO UPDATE SET
+            quoted_or_not = excluded.quoted_or_not,
+            updated_at = excluded.updated_at
+        """,
+        (
+            project_id,
+            query_id,
+            publish_platform,
+            publish_url,
+            quoted_or_not,
+            now_ts(),
+        ),
+    )
+
+    conn.commit()
+    conn.close()
+    touch_project(project_id)
+    return "updated" if existing_row else "inserted"
+
+
+def get_all_content_publish(project_id: int) -> pd.DataFrame:
+    _ensure_content_publish_table_exists()
+    conn = get_connection()
+    df = _read_sql_query(
+        """
+        SELECT query_id, publish_platform, publish_url, quoted_or_not, updated_at
+        FROM content_publish
+        WHERE project_id = ?
+        ORDER BY query_id, publish_platform, publish_url
+        """,
+        conn,
+        params=[int(project_id)],
+    )
+    conn.close()
+    return df
+
+
+def delete_content_publish_batch(
+    project_id: int,
+    rows: List[Dict[str, Any]],
+) -> int:
+    _ensure_content_publish_table_exists()
+    cleaned_rows = []
+    for row in rows:
+        query_id = normalize_text(row.get("query_id", ""))
+        publish_platform = normalize_text(row.get("publish_platform", ""))
+        publish_url = normalize_text(row.get("publish_url", ""))
+        if query_id and publish_platform and publish_url:
+            cleaned_rows.append((int(project_id), query_id, publish_platform, publish_url))
+
+    if not cleaned_rows:
+        return 0
+
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.executemany(
+        """
+        DELETE FROM content_publish
+        WHERE project_id = ?
+          AND query_id = ?
+          AND publish_platform = ?
+          AND publish_url = ?
+        """,
+        cleaned_rows,
+    )
+    deleted_count = cursor.rowcount
+    conn.commit()
+    conn.close()
+    touch_project(project_id)
+    return deleted_count
+
+
+def load_content_publish_from_excel(project_id: int, uploaded_file=None):
+    _ensure_content_publish_table_exists()
+    project_id = int(project_id)
+    source = uploaded_file if uploaded_file is not None else CONTENT_PUBLISH_FILE
+    if uploaded_file is None and not os.path.exists(CONTENT_PUBLISH_FILE):
+        return False, "content_publish.xlsx not found"
+
+    try:
+        df = pd.read_excel(source)
+        df.columns = [str(c).strip() for c in df.columns]
+
+        required_cols = ["query_id", "publish_platform", "publish_url", "quoted_or_not"]
+        missing = [c for c in required_cols if c not in df.columns]
+        if missing:
+            return False, f"Missing columns: {', '.join(missing)}"
+
+        df = df.dropna(subset=required_cols).copy()
+        df["query_id"] = df["query_id"].astype(str).str.strip()
+        df["publish_platform"] = df["publish_platform"].astype(str).str.strip()
+        df["publish_url"] = df["publish_url"].astype(str).str.strip()
+        df["quoted_or_not"] = df["quoted_or_not"].astype(str).str.strip().str.upper()
+        df = df[
+            (df["query_id"] != "") &
+            (df["publish_platform"] != "") &
+            (df["publish_url"] != "")
+        ]
+        df = df[df["quoted_or_not"].isin(["Y", "N"])]
+        df = df.drop_duplicates(subset=["query_id", "publish_platform", "publish_url"], keep="last")
+
+        inserted_count = 0
+        updated_count = 0
+
+        for _, row in df.iterrows():
+            action = upsert_content_publish(
+                project_id,
+                row["query_id"],
+                row["publish_platform"],
+                row["publish_url"],
+                row["quoted_or_not"],
+            )
             if action == "inserted":
                 inserted_count += 1
             elif action == "updated":
@@ -2454,11 +2705,37 @@ def build_entity_mapping_template_bytes() -> bytes:
     return _dataframe_to_excel_bytes({"entity_mapping": template_df})
 
 
+def build_entity_mapping_template_bytes_v2() -> bytes:
+    template_df = pd.DataFrame([
+        {
+            "entity_name_cn": "Sample Brand CN",
+            "entity_name_en": "Sample Brand EN",
+            "sinodis_flag": "N",
+        }
+    ])
+    return _dataframe_to_excel_bytes({"entity_mapping": template_df})
+
+
+build_entity_mapping_template_bytes = build_entity_mapping_template_bytes_v2
+
+
 def build_source_mapping_template_bytes() -> bytes:
     template_df = pd.DataFrame([
         {"source_name": "知乎", "source_url": "https://www.zhihu.com"}
     ])
     return _dataframe_to_excel_bytes({"source_mapping": template_df})
+
+
+def build_content_publish_template_bytes() -> bytes:
+    template_df = pd.DataFrame([
+        {
+            "query_id": "Q001",
+            "publish_platform": "Doubao",
+            "publish_url": "https://example.com/article-1",
+            "quoted_or_not": "Y",
+        }
+    ])
+    return _dataframe_to_excel_bytes({"content_publish": template_df})
 
 
 def build_monthly_results_template_bytes() -> bytes:
@@ -2787,3 +3064,4 @@ def import_monthly_results_excel(uploaded_file, project_id: int):
         "skipped_duplicate_presence_records": skipped_duplicate_presence,
         "skipped_duplicate_source_records": skipped_duplicate_source,
     }
+

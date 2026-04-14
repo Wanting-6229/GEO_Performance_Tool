@@ -30,6 +30,11 @@ from utils.db import (
     delete_source_mapping_batch,
     load_source_mapping_from_excel,
     build_source_mapping_template_bytes,
+    upsert_content_publish,
+    get_all_content_publish,
+    delete_content_publish_batch,
+    load_content_publish_from_excel,
+    build_content_publish_template_bytes,
 
     # manual / upload
     save_manual_submission,
@@ -196,6 +201,11 @@ def _cached_source_mappings_df(project_id: int):
 
 
 @st.cache_data(show_spinner=False, ttl=60)
+def _cached_content_publish_df(project_id: int):
+    return get_all_content_publish(project_id)
+
+
+@st.cache_data(show_spinner=False, ttl=60)
 def _cached_submissions_df(project_id: int):
     return get_all_submissions(project_id=project_id)
 
@@ -271,6 +281,47 @@ def _log_form_perf(label: str, start_time: float, **metrics):
     if suffix:
         message = f"{message} {suffix}"
     print(message, flush=True)
+
+
+def _start_section_perf_trace(section_name: str):
+    st.session_state.section_perf_trace = {
+        "section": section_name,
+        "events": [],
+    }
+
+
+def _timed_read(section_name: str, read_name: str, fn, *args, **kwargs):
+    start = time.perf_counter()
+    result = fn(*args, **kwargs)
+    elapsed = time.perf_counter() - start
+
+    trace = st.session_state.get("section_perf_trace")
+    if isinstance(trace, dict) and trace.get("section") == section_name:
+        trace["events"].append(
+            {
+                "name": read_name,
+                "elapsed": elapsed,
+            }
+        )
+        st.session_state.section_perf_trace = trace
+
+    print(f"[form-read] section={section_name} read={read_name} elapsed={elapsed:.3f}s", flush=True)
+    return result
+
+
+def _log_slowest_reads(section_name: str, limit: int = 5):
+    trace = st.session_state.get("section_perf_trace")
+    if not isinstance(trace, dict) or trace.get("section") != section_name:
+        return
+
+    events = trace.get("events", [])
+    if not events:
+        print(f"[form-read] section={section_name} no read events recorded", flush=True)
+        return
+
+    slowest = sorted(events, key=lambda item: item["elapsed"], reverse=True)[:limit]
+    summary = ", ".join(f"{item['name']}={item['elapsed']:.3f}s" for item in slowest)
+    print(f"[form-read] section={section_name} slowest={summary}", flush=True)
 
 
 def _normalize_editor_df(df: pd.DataFrame, columns: list[str], defaults: dict) -> pd.DataFrame:
@@ -448,6 +499,7 @@ def _sync_data_record_section_from_nav():
         "Query Master",
         "Entity Mapping",
         "Source Mapping",
+        "Content Publish",
         "Submission Manager",
         "Raw Data",
     }
@@ -644,6 +696,7 @@ def _clear_data_record_read_caches():
     _cached_source_mapping_lookup.clear()
     _cached_entity_mappings_df.clear()
     _cached_source_mappings_df.clear()
+    _cached_content_publish_df.clear()
     _cached_submissions_df.clear()
     _cached_presence_records_count.clear()
     _cached_source_records_count.clear()
@@ -722,6 +775,7 @@ def _render_source_records_table():
 # =========================================================
 def render_manual_entry():
     manual_entry_start = time.perf_counter()
+    _start_section_perf_trace("Data Entry / Manual Entry")
     st.subheader("Manual Entry")
     st.caption("Record monthly presence and source results based on existing Query Master.")
 
@@ -734,7 +788,7 @@ def render_manual_entry():
         return
 
     static_options = _cached_entry_static_options()
-    queries_df = _cached_queries_for_form(project_id=project_id, active_only=True)
+    queries_df = _timed_read("Data Entry / Manual Entry", "active_query_master", _cached_queries_for_form, project_id=project_id, active_only=True)
     if queries_df.empty:
         st.info("No active query is available. Please create Query Master first in Data Record.")
         return
@@ -752,7 +806,7 @@ def render_manual_entry():
         created_by = st.text_input("Created By", key="manual_created_by", placeholder="e.g. Alice")
 
     selected_query = st.selectbox("Query Number", query_numbers, key="manual_query_number")
-    query_info = _cached_query_info(project_id, selected_query)
+    query_info = _timed_read("Data Entry / Manual Entry", "query_info", _cached_query_info, project_id, selected_query)
     _render_query_info_card(query_info)
 
     st.markdown("### Presence Records")
@@ -865,9 +919,11 @@ def render_manual_entry():
                 st.error(f"Failed to save submission: {e}")
 
     _log_form_perf("manual entry render", manual_entry_start, project_id=int(project_id), active_queries=len(queries_df))
+    _log_slowest_reads("Data Entry / Manual Entry")
 
 
 def render_excel_upload():
+    _start_section_perf_trace("Data Entry / Excel Upload")
     st.subheader("Excel Upload")
     st.caption("Upload monthly result template with two sheets: presence_records and source_records.")
 
@@ -942,6 +998,7 @@ def render_excel_upload():
                 except Exception as e:
                     _set_monthly_import_feedback("warning", f"Import failed: {e}")
                     st.error(f"Import failed: {e}")
+    _log_slowest_reads("Data Entry / Excel Upload")
 
 
 def render_data_entry_page():
@@ -967,6 +1024,7 @@ def render_data_entry_page():
 # =========================================================
 def render_query_master_manager():
     query_master_start = time.perf_counter()
+    _start_section_perf_trace("Data Record / Query Master")
     st.subheader("Query Master")
     project_id = _current_project_id()
     if project_id is None:
@@ -1038,7 +1096,7 @@ def render_query_master_manager():
                 st.error(f"Failed to save Query Master: {e}")
 
     st.markdown("### Current Query Master")
-    queries_df = _cached_queries_for_form(project_id=project_id, active_only=False)
+    queries_df = _timed_read("Data Record / Query Master", "query_master_list", _cached_queries_for_form, project_id=project_id, active_only=False)
     if queries_df.empty:
         st.info("No query master records yet.")
     else:
@@ -1208,7 +1266,7 @@ def render_query_master_manager():
             queries_df["query_number"].tolist(),
             key="query_master_archive_selector",
         )
-        q_info = _cached_query_info(project_id, selected_query)
+        q_info = _timed_read("Data Record / Query Master", "selected_query_info", _cached_query_info, project_id, selected_query)
 
         if q_info:
             current_active = q_info.get("active", 1)
@@ -1233,6 +1291,7 @@ def render_query_master_manager():
                     st.error(f"Failed to update query status: {e}")
 
     _log_form_perf("query master render", query_master_start, project_id=int(project_id), rows=len(queries_df))
+    _log_slowest_reads("Data Record / Query Master")
 
 
 # =========================================================
@@ -1240,6 +1299,7 @@ def render_query_master_manager():
 # =========================================================
 def render_entity_mapping_manager():
     entity_mapping_start = time.perf_counter()
+    _start_section_perf_trace("Data Record / Entity Mapping")
     st.subheader("Entity Mapping")
     project_id = _current_project_id()
     if project_id is None:
@@ -1252,6 +1312,7 @@ def render_entity_mapping_manager():
         with st.form("entity_mapping_form", clear_on_submit=True):
             entity_name_cn = st.text_input("Entity Name CN")
             entity_name_en = st.text_input("Entity Name EN")
+            sinodis_flag = st.selectbox("Sinodis Flag", ["Y", "N"], index=1)
             submitted = st.form_submit_button("Save Entity Mapping", type="primary")
 
             if submitted:
@@ -1259,7 +1320,12 @@ def render_entity_mapping_manager():
                     if not _norm(entity_name_cn) or not _norm(entity_name_en):
                         st.error("Both Entity Name CN and Entity Name EN are required.")
                     else:
-                        upsert_entity_mapping(project_id, _norm(entity_name_cn), _norm(entity_name_en))
+                        upsert_entity_mapping(
+                            project_id,
+                            _norm(entity_name_cn),
+                            _norm(entity_name_en),
+                            sinodis_flag,
+                        )
                         _clear_data_record_read_caches()
                         st.success("Entity mapping saved.")
                         st.rerun()
@@ -1283,7 +1349,7 @@ def render_entity_mapping_manager():
             else:
                 st.error(msg)
 
-    mapping_df = _cached_entity_mappings_df(project_id)
+    mapping_df = _timed_read("Data Record / Entity Mapping", "entity_mapping_list", _cached_entity_mappings_df, project_id)
     if mapping_df.empty:
         st.info("No entity mappings yet.")
     else:
@@ -1302,6 +1368,7 @@ def render_entity_mapping_manager():
                 "selected": st.column_config.CheckboxColumn("Select"),
                 "entity_name_cn": st.column_config.TextColumn("Entity Name CN"),
                 "entity_name_en": st.column_config.TextColumn("Entity Name EN"),
+                "sinodis_flag": st.column_config.TextColumn("Sinodis Flag"),
                 "updated_at": st.column_config.TextColumn("Updated At"),
             },
             disabled=[col for col in display_df.columns if col != "selected"],
@@ -1339,6 +1406,7 @@ def render_entity_mapping_manager():
                     st.rerun()
 
     _log_form_perf("entity mapping render", entity_mapping_start, project_id=int(project_id), rows=len(mapping_df))
+    _log_slowest_reads("Data Record / Entity Mapping")
 
 
 # =========================================================
@@ -1346,6 +1414,7 @@ def render_entity_mapping_manager():
 # =========================================================
 def render_source_mapping_manager():
     source_mapping_start = time.perf_counter()
+    _start_section_perf_trace("Data Record / Source Mapping")
     st.subheader("Source Mapping")
     project_id = _current_project_id()
     if project_id is None:
@@ -1389,7 +1458,7 @@ def render_source_mapping_manager():
             else:
                 st.error(msg)
 
-    mapping_df = _cached_source_mappings_df(project_id)
+    mapping_df = _timed_read("Data Record / Source Mapping", "source_mapping_list", _cached_source_mappings_df, project_id)
     if mapping_df.empty:
         st.info("No source mappings yet.")
     else:
@@ -1445,6 +1514,128 @@ def render_source_mapping_manager():
                     st.rerun()
 
     _log_form_perf("source mapping render", source_mapping_start, project_id=int(project_id), rows=len(mapping_df))
+    _log_slowest_reads("Data Record / Source Mapping")
+
+
+# =========================================================
+# Data Record - Content Publish
+# =========================================================
+def render_content_publish_manager():
+    content_publish_start = time.perf_counter()
+    _start_section_perf_trace("Data Record / Content Publish")
+    st.subheader("Content Publish")
+    project_id = _current_project_id()
+    if project_id is None:
+        st.info("Please select a project first.")
+        return
+
+    st.caption("Content Publish is project-level and can only be loaded from Excel.")
+    c1, c2 = st.columns(2)
+    with c1:
+        with st.form("content_publish_form", clear_on_submit=True):
+            query_id = st.text_input("Query ID")
+            publish_platform = st.text_input("Publish Platform")
+            publish_url = st.text_input("Publish URL", placeholder="e.g. https://example.com/article")
+            quoted_or_not = st.selectbox("Quoted Or Not", ["Y", "N"], index=1)
+            submitted = st.form_submit_button("Save Content Publish", type="primary")
+
+            if submitted:
+                try:
+                    if not _norm(query_id) or not _norm(publish_platform) or not _norm(publish_url):
+                        st.error("Query ID, Publish Platform, and Publish URL are required.")
+                    else:
+                        upsert_content_publish(
+                            project_id,
+                            _norm(query_id),
+                            _norm(publish_platform),
+                            _norm(publish_url),
+                            quoted_or_not,
+                        )
+                        _clear_data_record_read_caches()
+                        st.success("Content publish record saved.")
+                        st.rerun()
+                except Exception as e:
+                    st.error(f"Failed to save content publish record: {e}")
+
+    with c2:
+        _download_template_button(
+            "Download Content Publish Template",
+            build_content_publish_template_bytes(),
+            "content_publish_template.xlsx",
+            "download_content_publish_template",
+        )
+        uploaded_publish = st.file_uploader("Upload Content Publish Excel", type=["xlsx"], key="content_publish_upload")
+        if uploaded_publish is not None and st.button("Import Content Publish Excel", use_container_width=True, key="import_content_publish_btn"):
+            success, msg = load_content_publish_from_excel(project_id=project_id, uploaded_file=uploaded_publish)
+            if success:
+                _clear_data_record_read_caches()
+                st.success(msg)
+                st.rerun()
+            else:
+                st.error(msg)
+
+    publish_df = _timed_read("Data Record / Content Publish", "content_publish_list", _cached_content_publish_df, project_id)
+    if publish_df.empty:
+        st.info("No content publish records yet.")
+    else:
+        if "show_delete_content_publish_confirm" not in st.session_state:
+            st.session_state.show_delete_content_publish_confirm = False
+
+        display_df = publish_df.copy()
+        display_df.insert(0, "selected", False)
+
+        edited_df = st.data_editor(
+            display_df,
+            use_container_width=True,
+            hide_index=True,
+            key="content_publish_editor",
+            column_config={
+                "selected": st.column_config.CheckboxColumn("Select"),
+                "query_id": st.column_config.TextColumn("Query ID"),
+                "publish_platform": st.column_config.TextColumn("Publish Platform"),
+                "publish_url": st.column_config.TextColumn("Publish URL"),
+                "quoted_or_not": st.column_config.TextColumn("Quoted Or Not"),
+                "updated_at": st.column_config.TextColumn("Updated At"),
+            },
+            disabled=[col for col in display_df.columns if col != "selected"],
+        )
+
+        selected_rows = edited_df[edited_df["selected"] == True].copy()
+        selected_publish_rows = (
+            selected_rows[["query_id", "publish_platform", "publish_url"]].to_dict("records")
+            if not selected_rows.empty else []
+        )
+
+        if st.button("Delete Selected", use_container_width=True, key="content_publish_delete_selected"):
+            if not selected_publish_rows:
+                st.error("Please select at least one record.")
+            else:
+                st.session_state.show_delete_content_publish_confirm = True
+
+        if st.session_state.show_delete_content_publish_confirm:
+            st.warning("Are you sure you want to delete the selected content publish records?")
+            dc1, dc2 = st.columns(2)
+            with dc1:
+                if st.button("Confirm Delete", type="primary", use_container_width=True, key="content_publish_confirm_delete"):
+                    if not selected_publish_rows:
+                        st.session_state.show_delete_content_publish_confirm = False
+                        st.error("Please select at least one record.")
+                    else:
+                        try:
+                            deleted_count = delete_content_publish_batch(project_id=project_id, rows=selected_publish_rows)
+                            st.session_state.show_delete_content_publish_confirm = False
+                            _clear_data_record_read_caches()
+                            st.success(f"Successfully deleted {deleted_count} content publish record(s).")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Failed to delete content publish records: {e}")
+            with dc2:
+                if st.button("Cancel", use_container_width=True, key="content_publish_cancel_delete"):
+                    st.session_state.show_delete_content_publish_confirm = False
+                    st.rerun()
+
+    _log_form_perf("content publish render", content_publish_start, project_id=int(project_id), rows=len(publish_df))
+    _log_slowest_reads("Data Record / Content Publish")
 
 
 # =========================================================
@@ -1452,13 +1643,14 @@ def render_source_mapping_manager():
 # =========================================================
 def render_submission_manager():
     submission_manager_start = time.perf_counter()
+    _start_section_perf_trace("Data Record / Submission Manager")
     st.subheader("Submission Manager")
     project_id = _current_project_id()
     if project_id is None:
         st.info("Please select a project first.")
         return
 
-    submissions_df = _cached_submissions_df(project_id)
+    submissions_df = _timed_read("Data Record / Submission Manager", "submission_list", _cached_submissions_df, project_id)
     _log_form_perf("submission manager load", submission_manager_start, project_id=int(project_id), rows=len(submissions_df))
     if submissions_df.empty:
         st.info("No submissions yet.")
@@ -1492,6 +1684,7 @@ def render_submission_manager():
                 st.rerun()
             except Exception as e:
                 st.error(f"Failed to delete submissions: {e}")
+    _log_slowest_reads("Data Record / Submission Manager")
 
 
 # =========================================================
@@ -1499,6 +1692,7 @@ def render_submission_manager():
 # =========================================================
 def render_raw_records():
     raw_records_start = time.perf_counter()
+    _start_section_perf_trace("Data Record / Raw Data")
     st.subheader("Raw Data")
     st.caption("This section is the consolidated master table of all Excel uploads and manual entries.")
     project_id = _current_project_id()
@@ -1534,7 +1728,7 @@ def render_raw_records():
     source_rows = 0
 
     if raw_section == "Source Master Table":
-        total_rows = _get_source_records_count(project_id=project_id)
+        total_rows = _timed_read("Data Record / Raw Data", "source_row_count", _get_source_records_count, project_id=project_id)
         source_rows = total_rows
         total_pages = max(1, (total_rows + page_size - 1) // page_size)
         page_number = st.number_input(
@@ -1547,7 +1741,7 @@ def render_raw_records():
         )
         offset = (int(page_number) - 1) * int(page_size)
         print(f"[form-perf] source raw rows before render total_rows={total_rows} page_size={page_size} page={int(page_number)}", flush=True)
-        source_df = _cached_source_records_page(project_id=project_id, limit=int(page_size), offset=offset)
+        source_df = _timed_read("Data Record / Raw Data", "source_rows_page", _cached_source_records_page, project_id=project_id, limit=int(page_size), offset=offset)
         if source_df.empty:
             st.info("No source data yet.")
         else:
@@ -1586,7 +1780,7 @@ def render_raw_records():
                     except Exception as e:
                         st.error(f"Failed to delete source rows: {e}")
     else:
-        total_rows = _get_presence_records_count(project_id=project_id)
+        total_rows = _timed_read("Data Record / Raw Data", "presence_row_count", _get_presence_records_count, project_id=project_id)
         presence_rows = total_rows
         total_pages = max(1, (total_rows + page_size - 1) // page_size)
         page_number = st.number_input(
@@ -1599,7 +1793,7 @@ def render_raw_records():
         )
         offset = (int(page_number) - 1) * int(page_size)
         print(f"[form-perf] presence raw rows before render total_rows={total_rows} page_size={page_size} page={int(page_number)}", flush=True)
-        presence_df = _cached_presence_records_page(project_id=project_id, limit=int(page_size), offset=offset)
+        presence_df = _timed_read("Data Record / Raw Data", "presence_rows_page", _cached_presence_records_page, project_id=project_id, limit=int(page_size), offset=offset)
         if presence_df.empty:
             st.info("No presence data yet.")
         else:
@@ -1640,6 +1834,7 @@ def render_raw_records():
 
     print(f"[section] rendering raw section = {raw_section} project_id={int(project_id)}", flush=True)
     _log_form_perf("raw records render", raw_records_start, project_id=int(project_id), presence_rows=presence_rows, source_rows=source_rows, section=raw_section, page_size=page_size)
+    _log_slowest_reads("Data Record / Raw Data")
 
 
 def render_data_record_page():
@@ -1652,6 +1847,7 @@ def render_data_record_page():
         "Query Master",
         "Entity Mapping",
         "Source Mapping",
+        "Content Publish",
         "Submission Manager",
         "Raw Data",
     }
@@ -1668,6 +1864,7 @@ def render_data_record_page():
             "Query Master",
             "Entity Mapping",
             "Source Mapping",
+            "Content Publish",
             "Submission Manager",
             "Raw Data",
         ],
@@ -1683,6 +1880,8 @@ def render_data_record_page():
         render_entity_mapping_manager()
     elif section == "Source Mapping":
         render_source_mapping_manager()
+    elif section == "Content Publish":
+        render_content_publish_manager()
     elif section == "Submission Manager":
         render_submission_manager()
     elif section == "Raw Data":

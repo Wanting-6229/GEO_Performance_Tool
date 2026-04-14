@@ -1,4 +1,5 @@
 import os
+import html
 import base64
 import time
 import pandas as pd
@@ -13,6 +14,7 @@ from utils.db import (
     list_projects,
     get_project,
     get_project_by_name,
+    get_all_content_publish,
     split_publish_months,
 )
 from utils.loader import (
@@ -25,6 +27,11 @@ from utils.forms import (
 )
 from utils.charts import (
     build_dashboard_payload,
+    build_brand_ranking_table,
+    build_brand_visibility_by_category_table,
+    build_brand_visibility_by_category_and_publish_month_table,
+    build_brand_visibility_by_publish_month_table,
+    build_brand_visibility_by_record_month_table,
     build_brand_ranking_chart_from_table,
     build_channel_ranking_chart_from_table,
     build_source_occurrence_chart_from_table,
@@ -32,6 +39,7 @@ from utils.charts import (
     build_source_distribution_by_platform_chart_from_table,
     build_brand_visibility_by_category_chart_from_table,
     build_brand_visibility_by_publish_month_chart_from_table,
+    build_brand_visibility_by_record_month_chart_from_table,
 )
 
 
@@ -136,8 +144,22 @@ def inject_dashboard_css():
     st.markdown(
         """
         <style>
+        :root {
+            --bg: #f8f9fc;
+            --panel: #ffffff;
+            --border: #eef2f6;
+            --text: #2d2d2d;
+            --muted: #6c7a89;
+            --accent: #2e1452;
+            --accent-hover: #1f0e38;
+            --secondary: #2bd6d9;
+            --secondary-hover: #23b8bb;
+            --error-bg: #fef0ed;
+            --error-text: #e74c3c;
+        }
+
         .stApp {
-            background: linear-gradient(180deg, #f8fafc 0%, #f3f7fb 100%);
+            background: linear-gradient(180deg, #f8f9fc 0%, #f0f2f5 100%);
         }
 
         .main .block-container {
@@ -153,38 +175,40 @@ def inject_dashboard_css():
         .hero-wrap {
             position: relative;
             padding: 1.2rem 1.25rem 1.15rem 1.25rem;
-            border-radius: 20px;
-            background: linear-gradient(135deg, #f8fbff 0%, #f4f9ff 46%, #ffffff 100%);
-            border: 1px solid rgba(191, 219, 254, 0.55);
-            box-shadow: 0 8px 24px rgba(148, 163, 184, 0.10);
+            border-radius: 16px;
+            background:
+                radial-gradient(circle at top right, rgba(125, 211, 252, 0.20), transparent 28%),
+                linear-gradient(135deg, #fffef8 0%, #f8fbff 48%, #f5fffb 100%);
+            border: 1px solid rgba(203, 213, 225, 0.85);
+            box-shadow: 0 12px 28px rgba(15, 23, 42, 0.06);
             margin-bottom: 1rem;
         }
 
         .hero-title {
-            font-size: 1.95rem;
+            font-size: 1.78rem;
             font-weight: 800;
-            color: #1f2d3d;
+            color: var(--text);
             margin: 0;
             line-height: 1.15;
         }
 
         .hero-subtitle {
             margin-top: 0.4rem;
-            font-size: 0.98rem;
-            color: #5e6b7a;
+            font-size: 0.92rem;
+            color: var(--muted);
         }
 
         .section-title {
-            font-size: 1.18rem;
+            font-size: 1.08rem;
             font-weight: 800;
             margin: 0;
-            color: #334155;
+            color: var(--text);
         }
 
         .section-desc {
             margin-top: 0.24rem;
-            color: #64748b;
-            font-size: 0.92rem;
+            color: var(--muted);
+            font-size: 0.86rem;
         }
 
         .section-wrap {
@@ -199,88 +223,103 @@ def inject_dashboard_css():
         }
 
         .dashboard-section + .dashboard-section {
-            border-top: 1px solid rgba(255, 255, 255, 0.92);
-            box-shadow: 0 -1px 0 rgba(226, 232, 240, 0.9);
+            border-top: 1px solid var(--border);
             padding-top: 1rem;
         }
 
-        .dashboard-filters-shell {
-            background: rgba(255, 255, 255, 0.96);
-            border: 1px solid rgba(203, 213, 225, 0.95);
-            border-radius: 20px;
-            padding: 1rem 1rem 0.7rem 1rem;
-            box-shadow: 0 8px 20px rgba(148, 163, 184, 0.10);
+        div[data-testid="stVerticalBlock"]:has(.dashboard-filters-marker) {
+            background: #ffffff;
+            border: 1px solid #e6ebf2;
+            border-radius: 18px;
+            padding: 1.05rem 1.05rem 0.8rem 1.05rem;
+            box-shadow: 0 10px 24px rgba(15, 23, 42, 0.06);
             margin-bottom: 1rem;
         }
 
+        .dashboard-filters-marker {
+            height: 0;
+            overflow: hidden;
+        }
+
         .dashboard-filters-title {
-            margin: 0 0 0.8rem 0;
-            font-size: 1.02rem;
+            margin: 0 0 0.95rem 0;
+            font-size: 0.96rem;
             font-weight: 800;
-            color: #334155;
+            color: var(--accent);
+            padding-bottom: 0.7rem;
+            border-bottom: 1px solid #edf1f6;
         }
 
-        .dashboard-filters-shell label,
-        .dashboard-filters-shell .stMarkdown,
-        .dashboard-filters-shell div[data-testid="stWidgetLabel"] p {
-            color: #475569 !important;
-            font-weight: 700 !important;
+        div[data-testid="stVerticalBlock"]:has(.dashboard-filters-marker) label,
+        div[data-testid="stVerticalBlock"]:has(.dashboard-filters-marker) .stMarkdown,
+        div[data-testid="stVerticalBlock"]:has(.dashboard-filters-marker) div[data-testid="stWidgetLabel"] p {
+            color: var(--accent) !important;
+            font-weight: 800 !important;
+            font-size: 0.8rem !important;
         }
 
-        .dashboard-filters-shell div[data-baseweb="select"] > div,
-        .dashboard-filters-shell div[data-baseweb="input"] > div,
-        .dashboard-filters-shell div[data-baseweb="popover"] > div,
-        .dashboard-filters-shell div[data-testid="stDateInput"] [data-baseweb="input"] {
+        div[data-testid="stVerticalBlock"]:has(.dashboard-filters-marker) [data-testid="column"] {
+            background: #ffffff;
+            border: 1px solid #edf1f6;
+            border-radius: 14px;
+            padding: 0.8rem 0.85rem 0.35rem 0.85rem;
+            box-shadow: 0 2px 8px rgba(15, 23, 42, 0.03);
+            min-height: 104px;
+        }
+
+        div[data-testid="stVerticalBlock"]:has(.dashboard-filters-marker) div[data-baseweb="select"] > div,
+        div[data-testid="stVerticalBlock"]:has(.dashboard-filters-marker) div[data-baseweb="input"] > div,
+        div[data-testid="stVerticalBlock"]:has(.dashboard-filters-marker) div[data-baseweb="popover"] > div,
+        div[data-testid="stVerticalBlock"]:has(.dashboard-filters-marker) div[data-testid="stDateInput"] [data-baseweb="input"] {
             background: #ffffff !important;
-            border-color: rgba(148, 163, 184, 0.70) !important;
-            box-shadow: 0 1px 2px rgba(148, 163, 184, 0.08);
+            border-color: #dfe6ef !important;
+            border-radius: 12px !important;
+            box-shadow: 0 1px 3px rgba(15, 23, 42, 0.04);
         }
 
-        .dashboard-filters-shell div[data-baseweb="select"] > div:hover,
-        .dashboard-filters-shell div[data-baseweb="input"] > div:hover,
-        .dashboard-filters-shell div[data-testid="stDateInput"] [data-baseweb="input"]:hover {
-            border-color: rgba(100, 116, 139, 0.88) !important;
+        div[data-testid="stVerticalBlock"]:has(.dashboard-filters-marker) div[data-baseweb="select"] > div:hover,
+        div[data-testid="stVerticalBlock"]:has(.dashboard-filters-marker) div[data-baseweb="input"] > div:hover,
+        div[data-testid="stVerticalBlock"]:has(.dashboard-filters-marker) div[data-testid="stDateInput"] [data-baseweb="input"]:hover {
+            border-color: var(--accent) !important;
         }
 
-        .dashboard-filters-shell div[data-baseweb="select"] > div:focus-within,
-        .dashboard-filters-shell div[data-baseweb="input"] > div:focus-within,
-        .dashboard-filters-shell div[data-testid="stDateInput"] [data-baseweb="input"]:focus-within {
-            border-color: #7aa8f8 !important;
-            box-shadow: 0 0 0 3px rgba(110, 168, 254, 0.18) !important;
+        div[data-testid="stVerticalBlock"]:has(.dashboard-filters-marker) div[data-baseweb="select"] > div:focus-within,
+        div[data-testid="stVerticalBlock"]:has(.dashboard-filters-marker) div[data-baseweb="input"] > div:focus-within,
+        div[data-testid="stVerticalBlock"]:has(.dashboard-filters-marker) div[data-testid="stDateInput"] [data-baseweb="input"]:focus-within {
+            border-color: var(--accent) !important;
+            box-shadow: 0 0 0 3px rgba(43, 214, 217, 0.14) !important;
         }
 
-        .dashboard-filters-shell input,
-        .dashboard-filters-shell textarea {
-            color: #334155 !important;
+        div[data-testid="stVerticalBlock"]:has(.dashboard-filters-marker) input,
+        div[data-testid="stVerticalBlock"]:has(.dashboard-filters-marker) textarea {
+            color: var(--text) !important;
         }
 
-        .dashboard-filters-shell div[data-baseweb="tag"] {
-            background: #edf4ff !important;
-            border: 1px solid rgba(147, 197, 253, 0.85) !important;
-            color: #31558f !important;
+        div[data-testid="stVerticalBlock"]:has(.dashboard-filters-marker) div[data-baseweb="tag"] {
+            background: var(--secondary) !important;
+            border: 1px solid var(--border) !important;
+            color: var(--text) !important;
         }
 
-        .dashboard-filters-shell div[data-baseweb="tag"] span {
-            color: #31558f !important;
+        div[data-testid="stVerticalBlock"]:has(.dashboard-filters-marker) div[data-baseweb="tag"] span {
+            color: var(--text) !important;
             font-weight: 700 !important;
         }
 
         .kpi-card {
             position: relative;
             overflow: hidden;
-            background:
-                radial-gradient(circle at top right, rgba(110, 168, 254, 0.14), transparent 34%),
-                linear-gradient(180deg, #ffffff 0%, #fbfdff 100%);
-            border: 1px solid rgba(203, 213, 225, 0.70);
-            border-radius: 20px;
+            background: linear-gradient(180deg, var(--panel) 0%, #f8f6fc 100%);
+            border: 1px solid var(--border);
+            border-radius: 16px;
             padding: 1.15rem 1.1rem 1.05rem 1.1rem;
-            box-shadow: 0 8px 22px rgba(148, 163, 184, 0.10);
+            box-shadow: 0 8px 24px rgba(46, 20, 82, 0.06);
             min-height: 122px;
         }
 
         .kpi-label {
-            color: #5b6b84;
-            font-size: 0.78rem;
+            color: var(--muted);
+            font-size: 0.72rem;
             font-weight: 700;
             letter-spacing: 0.08em;
             text-transform: uppercase;
@@ -288,54 +327,395 @@ def inject_dashboard_css():
         }
 
         .kpi-value {
-            color: #1e293b;
-            font-size: 2.28rem;
+            color: var(--text);
+            font-size: 2.05rem;
             font-weight: 800;
             line-height: 1.02;
             letter-spacing: -0.02em;
         }
 
         .chart-card {
-            background: #ffffff;
-            border: 1px solid rgba(203, 213, 225, 0.78);
-            border-radius: 20px;
+            background: var(--panel);
+            border: 1px solid var(--border);
+            border-radius: 16px;
             padding: 1.08rem 1.15rem 0.95rem 1.15rem;
-            box-shadow: 0 8px 24px rgba(148, 163, 184, 0.09);
+            box-shadow: 0 8px 24px rgba(46, 20, 82, 0.06);
             margin-bottom: 1.05rem;
         }
 
         .chart-card-title {
-            font-size: 1rem;
+            font-size: 0.94rem;
             font-weight: 800;
-            color: #334155;
+            color: var(--text);
             margin-bottom: 0.8rem;
             padding-bottom: 0.68rem;
-            border-bottom: 1px solid rgba(226, 232, 240, 0.95);
+            border-bottom: 1px solid var(--border);
+        }
+
+        .subsection-kicker {
+            margin: 0.15rem 0 0.7rem 0.1rem;
+            color: #5d6f85;
+            font-size: 0.78rem;
+            font-weight: 800;
+            letter-spacing: 0.04em;
+            text-transform: uppercase;
+        }
+
+        .metric-table-shell {
+            border: 1px solid rgba(46, 20, 82, 0.10);
+            border-radius: 14px;
+            overflow: hidden;
+            background: linear-gradient(180deg, #ffffff 0%, #fcfbff 100%);
+        }
+
+        .metric-table-header {
+            display: grid;
+            grid-template-columns: minmax(0, 1.2fr) 180px;
+            gap: 0;
+            background: linear-gradient(180deg, #fffdfa 0%, #fff 100%);
+            border-bottom: 1px solid rgba(46, 20, 82, 0.08);
+        }
+
+        .metric-table-head-cell {
+            padding: 0.9rem 1rem 0.82rem 1rem;
+            font-size: 0.78rem;
+            font-weight: 800;
+            letter-spacing: 0.05em;
+            text-transform: uppercase;
+            color: #68798f;
+            position: relative;
+        }
+
+        .metric-table-head-cell::before {
+            content: "";
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 4px;
+            background: linear-gradient(90deg, #b9d8ff 0%, #63b3ff 100%);
+        }
+
+        .metric-table-head-cell.metric-table-head-value::before {
+            background: linear-gradient(90deg, #ffe8b5 0%, #ffb44c 100%);
+        }
+
+        .metric-table-body {
+            overflow-y: auto;
+        }
+
+        .metric-table-row {
+            display: grid;
+            grid-template-columns: minmax(0, 1.2fr) 180px;
+            gap: 0;
+            align-items: center;
+            background: rgba(255, 255, 255, 0.96);
+            border-bottom: 1px dashed rgba(46, 20, 82, 0.10);
+        }
+
+        .metric-table-row:last-child {
+            border-bottom: none;
+        }
+
+        .metric-table-cell {
+            padding: 0.95rem 1rem;
+            color: #2d2d2d;
+            font-size: 0.9rem;
+            line-height: 1.35;
+        }
+
+        .metric-table-value {
+            text-align: right;
+            font-weight: 800;
+            color: #d66a00;
+        }
+
+        .ranking-card {
+            background: linear-gradient(180deg, #ffffff 0%, #faf7ff 100%);
+            border: 1px solid rgba(46, 20, 82, 0.14);
+            border-radius: 16px;
+            padding: 1.08rem 1.15rem 1rem 1.15rem;
+            box-shadow: 0 10px 28px rgba(46, 20, 82, 0.08);
+            margin-bottom: 1.05rem;
+        }
+
+        .ranking-card .chart-card-title {
+            color: #2e1452;
+            border-bottom-color: rgba(46, 20, 82, 0.12);
+        }
+
+        .ranking-card-brand .chart-card-title {
+            color: #1f5874;
+        }
+
+        .ranking-card-brand .ranking-row.top3 {
+            background: linear-gradient(135deg, rgba(178, 233, 238, 0.58), rgba(236, 252, 251, 0.96));
+            border-color: rgba(57, 197, 211, 0.58);
+        }
+
+        .ranking-card-brand .ranking-score {
+            background: rgba(116, 225, 232, 0.18);
+            color: #167e8f;
+        }
+
+        .ranking-card-channel .chart-card-title {
+            color: #31559b;
+        }
+
+        .ranking-card-channel .ranking-row.top3 {
+            background: linear-gradient(135deg, rgba(191, 221, 255, 0.58), rgba(255, 247, 204, 0.92));
+            border-color: rgba(118, 171, 255, 0.58);
+        }
+
+        .ranking-card-channel .ranking-score {
+            background: rgba(255, 212, 92, 0.20);
+            color: #9f6a00;
+        }
+
+        .ranking-card-source-common {
+            min-height: 55.4rem;
+        }
+
+        .ranking-card-source-common .chart-card-title {
+            color: #244a73;
+        }
+
+        .ranking-card-source-common .ranking-row,
+        .ranking-card-source-doubao .ranking-row,
+        .ranking-card-source-deepseek .ranking-row {
+            padding: 0.6rem 0.72rem;
+            border-radius: 10px;
+        }
+
+        .ranking-card-source-common .ranking-left,
+        .ranking-card-source-doubao .ranking-left,
+        .ranking-card-source-deepseek .ranking-left {
+            gap: 0.58rem;
+        }
+
+        .ranking-card-source-common .ranking-rank,
+        .ranking-card-source-doubao .ranking-rank,
+        .ranking-card-source-deepseek .ranking-rank {
+            min-width: 1.75rem;
+            font-size: 0.86rem;
+        }
+
+        .ranking-card-source-common .ranking-brand,
+        .ranking-card-source-doubao .ranking-brand,
+        .ranking-card-source-deepseek .ranking-brand {
+            font-size: 0.8rem;
+            line-height: 1.25;
+        }
+
+        .ranking-card-source-doubao .ranking-score,
+        .ranking-card-source-deepseek .ranking-score {
+            padding: 0.28rem 0.62rem;
+            font-size: 0.74rem;
+        }
+
+        .ranking-card-source-doubao {
+            min-height: 26.6rem;
+            background: linear-gradient(180deg, #fff4ea 0%, #fffaf6 100%);
+            border-color: rgba(222, 112, 28, 0.24);
+            box-shadow: 0 12px 28px rgba(222, 112, 28, 0.10);
+        }
+
+        .ranking-card-source-doubao .chart-card-title {
+            color: #d66700;
+            border-bottom-color: rgba(222, 112, 28, 0.16);
+        }
+
+        .ranking-card-source-doubao .ranking-header {
+            border-bottom-color: rgba(222, 112, 28, 0.12);
+        }
+
+        .ranking-card-source-doubao .ranking-row.top3 {
+            background: linear-gradient(135deg, rgba(255, 208, 173, 0.65), rgba(255, 244, 234, 0.98));
+            border-color: rgba(222, 112, 28, 0.42);
+        }
+
+        .ranking-card-source-doubao .ranking-score {
+            background: rgba(222, 112, 28, 0.12);
+            color: #c85a00;
+        }
+
+        .ranking-card-source-deepseek {
+            min-height: 26.6rem;
+            background: linear-gradient(180deg, #eef6ff 0%, #f8fbff 100%);
+            border-color: rgba(53, 116, 204, 0.24);
+            box-shadow: 0 12px 28px rgba(53, 116, 204, 0.10);
+        }
+
+        .ranking-card-source-deepseek .chart-card-title {
+            color: #2f66d2;
+            border-bottom-color: rgba(53, 116, 204, 0.16);
+        }
+
+        .ranking-card-source-deepseek .ranking-header {
+            border-bottom-color: rgba(53, 116, 204, 0.12);
+        }
+
+        .ranking-card-source-deepseek .ranking-row.top3 {
+            background: linear-gradient(135deg, rgba(187, 220, 255, 0.72), rgba(248, 251, 255, 0.98));
+            border-color: rgba(53, 116, 204, 0.40);
+        }
+
+        .ranking-card-source-deepseek .ranking-score {
+            background: rgba(53, 116, 204, 0.12);
+            color: #2f66d2;
+        }
+
+        .ranking-list {
+            display: flex;
+            flex-direction: column;
+            gap: 0.7rem;
+        }
+
+        .ranking-grid {
+            display: grid;
+            grid-template-columns: repeat(var(--ranking-grid-columns, 2), minmax(0, 1fr));
+            column-gap: 0.85rem;
+            row-gap: 0.7rem;
+        }
+
+        .ranking-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 0.9rem;
+            padding: 0 0.9rem 0.7rem 0.9rem;
+            margin-bottom: 0.2rem;
+            border-bottom: 1px solid rgba(46, 20, 82, 0.12);
+        }
+
+        .ranking-header-left {
+            padding-left: 3rem;
+            color: var(--muted);
+            font-size: 0.72rem;
+            font-weight: 800;
+            letter-spacing: 0.05em;
+            text-transform: uppercase;
+        }
+
+        .ranking-header-right {
+            color: var(--muted);
+            font-size: 0.72rem;
+            font-weight: 800;
+            letter-spacing: 0.05em;
+            text-transform: uppercase;
+            text-align: right;
+            white-space: nowrap;
+        }
+
+        .ranking-list-scroll {
+            max-height: 25.5rem;
+            overflow-y: auto;
+            padding-right: 0.25rem;
+            scroll-snap-type: y proximity;
+        }
+
+        .ranking-list-scroll::-webkit-scrollbar {
+            width: 8px;
+        }
+
+        .ranking-list-scroll::-webkit-scrollbar-track {
+            background: rgba(46, 20, 82, 0.06);
+            border-radius: 999px;
+        }
+
+        .ranking-list-scroll::-webkit-scrollbar-thumb {
+            background: rgba(43, 214, 217, 0.65);
+            border-radius: 999px;
+        }
+
+        .ranking-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 0.9rem;
+            padding: 0.82rem 0.9rem;
+            border-radius: 12px;
+            background: linear-gradient(135deg, rgba(248, 246, 252, 0.98), rgba(255, 255, 255, 0.98));
+            border: 1px solid rgba(46, 20, 82, 0.10);
+            scroll-snap-align: start;
+        }
+
+        .ranking-row.top3 {
+            background: linear-gradient(135deg, rgba(46, 20, 82, 0.10), rgba(43, 214, 217, 0.12));
+            border-color: rgba(43, 214, 217, 0.55);
+        }
+
+        .ranking-left {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            min-width: 0;
+        }
+
+        .ranking-rank {
+            min-width: 2rem;
+            color: #2e1452;
+            font-size: 0.94rem;
+            font-weight: 800;
+            line-height: 1;
+        }
+
+        .ranking-brand {
+            color: #2d2d2d;
+            font-size: 0.9rem;
+            font-weight: 700;
+            line-height: 1.35;
+            word-break: break-word;
+        }
+
+        .ranking-score {
+            color: #23b8bb;
+            font-size: 0.95rem;
+            font-weight: 800;
+            white-space: nowrap;
+        }
+
+        .ranking-score {
+            flex-shrink: 0;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            padding: 0.34rem 0.72rem;
+            border-radius: 999px;
+            background: rgba(43, 214, 217, 0.14);
+            color: var(--accent);
+            font-size: 0.8rem;
+            font-weight: 800;
+            line-height: 1;
+        }
+
+        .ranking-row-empty {
+            visibility: hidden;
+            pointer-events: none;
         }
 
         div[data-testid="stDataFrame"] {
-            border: 1px solid rgba(226, 232, 240, 1);
-            border-radius: 16px;
+            border: 1px solid var(--border);
+            border-radius: 12px;
             overflow: hidden;
-            background: #fcfdff;
-            box-shadow: inset 0 1px 0 rgba(255,255,255,0.85);
+            background: var(--panel);
         }
 
         div[data-testid="stPlotlyChart"] {
-            border-radius: 16px;
+            border-radius: 12px;
             overflow: hidden;
         }
 
         div[data-testid="stExpander"] {
-            border: 1px solid rgba(226, 232, 240, 0.95);
-            border-radius: 18px;
-            background: rgba(255, 255, 255, 0.98);
-            box-shadow: 0 6px 18px rgba(148, 163, 184, 0.08);
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            background: var(--panel);
+            box-shadow: 0 6px 18px rgba(46, 20, 82, 0.04);
         }
 
         div[data-testid="stExpander"] summary {
             font-weight: 700;
-            color: #475569;
+            color: var(--text);
         }
 
         .project-toolbar-shell {
@@ -344,11 +724,11 @@ def inject_dashboard_css():
         }
 
         .project-card {
-            background: #ffffff;
-            border: 1px solid rgba(16, 24, 40, 0.06);
-            border-radius: 18px;
+            background: var(--panel);
+            border: 1px solid var(--border);
+            border-radius: 16px;
             padding: 1rem 1rem 1rem 1rem;
-            box-shadow: 0 8px 24px rgba(16, 24, 40, 0.05);
+            box-shadow: 0 8px 24px rgba(46, 20, 82, 0.04);
             min-height: 176px;
         }
 
@@ -361,7 +741,7 @@ def inject_dashboard_css():
         }
 
         .project-card-title {
-            color: #111827;
+            color: var(--text);
             font-size: 1.08rem;
             font-weight: 800;
             line-height: 1.2;
@@ -378,7 +758,7 @@ def inject_dashboard_css():
         }
 
         .project-card-meta {
-            color: #667085;
+            color: var(--muted);
             font-size: 0.92rem;
             margin-bottom: 0.3rem;
             line-height: 1.4;
@@ -411,7 +791,23 @@ def inject_dashboard_css():
             align-items: center;
             justify-content: center;
             line-height: 1;
-            border-radius: 12px;
+            border-radius: 999px;
+            background: var(--accent) !important;
+            color: #fff !important;
+            border: none !important;
+        }
+
+        div[data-testid="stButton"] > button:hover {
+            background: var(--accent-hover) !important;
+        }
+
+        div[data-testid="stButton"] > button[kind="secondary"] {
+            background: var(--secondary) !important;
+            color: var(--text) !important;
+        }
+
+        div[data-testid="stButton"] > button[kind="secondary"]:hover {
+            background: var(--secondary-hover) !important;
         }
 
         div[data-testid="stButton"] > button > div {
@@ -448,9 +844,9 @@ def inject_dashboard_css():
             object-fit: cover;
             object-position: center;
             border-radius: 50%;
-            border: 3px solid rgba(255,255,255,0.98);
-            box-shadow: 0 10px 28px rgba(0,0,0,0.16);
-            background: #fff;
+            border: 3px solid var(--panel);
+            box-shadow: 0 10px 28px rgba(46, 20, 82, 0.12);
+            background: var(--panel);
             transition: transform 0.18s ease;
             display: block;
         }
@@ -464,14 +860,14 @@ def inject_dashboard_css():
             left: 86px;
             top: 50%;
             transform: translateY(-50%);
-            background: rgba(31, 45, 61, 0.95);
-            color: #fff;
+            background: var(--text);
+            color: var(--panel);
             font-size: 14px;
             font-weight: 700;
             padding: 8px 12px;
             border-radius: 10px;
             white-space: nowrap;
-            box-shadow: 0 8px 20px rgba(0,0,0,0.18);
+            box-shadow: 0 8px 20px rgba(46, 20, 82, 0.18);
             opacity: 0;
             pointer-events: none;
             transition: opacity 0.18s ease;
@@ -487,6 +883,23 @@ def inject_dashboard_css():
 
         div[data-testid="stSegmentedControl"] button {
             font-weight: 700 !important;
+            background: var(--secondary) !important;
+            color: var(--text) !important;
+        }
+
+        div[data-testid="stSegmentedControl"] button[aria-selected="true"] {
+            background: var(--accent) !important;
+            color: #fff !important;
+        }
+
+        .stAlert {
+            background: var(--error-bg) !important;
+            color: var(--error-text) !important;
+            border: 1px solid var(--border) !important;
+        }
+
+        hr {
+            border-color: var(--border) !important;
         }
         </style>
         """,
@@ -544,12 +957,312 @@ def chart_card_end():
     st.markdown("</div>", unsafe_allow_html=True)
 
 
+def ranking_card_start(title: str):
+    st.markdown(
+        f"""
+        <div class="ranking-card">
+            <div class="chart-card-title">{html.escape(title)}</div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def ranking_card_end():
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
 def section_card_start():
     st.markdown('<div class="dashboard-section">', unsafe_allow_html=True)
 
 
 def section_card_end():
     st.markdown("</div>", unsafe_allow_html=True)
+
+
+def render_ranking_list(
+    table_df: pd.DataFrame,
+    title: str,
+    name_column: str,
+    name_label: str,
+    value_column: str,
+    value_label: str,
+    scrollable: bool = False,
+    scroll_height_px: int | None = None,
+    two_column_top20: bool = False,
+    grid_columns: int | None = None,
+    items_per_column: int | None = None,
+    card_class: str = "",
+):
+    if table_df.empty:
+        st.info("No data available")
+        return
+
+    if name_column not in table_df.columns or value_column not in table_df.columns:
+        st.info("No data available")
+        return
+
+    top_rows = table_df.head(20).copy() if two_column_top20 else table_df.copy()
+    medal_map = {1: "🥇", 2: "🥈", 3: "🥉"}
+    row_html = []
+
+    for rank, (_, row) in enumerate(top_rows.iterrows(), start=1):
+        brand = html.escape(str(row.get(name_column, "")))
+        score_value = row.get(value_column)
+        if pd.isna(score_value):
+            score_text = "-"
+        else:
+            score_text = html.escape(str(score_value).strip())
+
+        show_score = value_label.strip() != "" and score_text not in {"", "-"}
+
+        rank_label = medal_map.get(rank, str(rank))
+        row_class = "ranking-row top3" if rank <= 3 else "ranking-row"
+        score_html = f'<div class="ranking-score">{score_text}</div>' if show_score else ""
+        row_html.append(
+            (
+                f'<div class="{row_class}">'
+                f'<div class="ranking-left">'
+                f'<div class="ranking-rank">{rank_label}</div>'
+                f'<div class="ranking-brand">{brand}</div>'
+                f'</div>'
+                f'{score_html}'
+                f'</div>'
+            )
+        )
+
+    if grid_columns and items_per_column:
+        total_slots = grid_columns * items_per_column
+        row_html = row_html[:total_slots]
+        while len(row_html) < total_slots:
+            row_html.append(
+                (
+                    '<div class="ranking-row ranking-row-empty">'
+                    '<div class="ranking-left">'
+                    '<div class="ranking-rank">0</div>'
+                    f'<div class="ranking-brand">{html.escape(name_label)}</div>'
+                    '</div>'
+                    '<div class="ranking-score">0</div>'
+                    '</div>'
+                )
+            )
+        column_html = []
+        for column_index in range(grid_columns):
+            start = column_index * items_per_column
+            end = start + items_per_column
+            column_html.append(f'<div class="ranking-list">{"".join(row_html[start:end])}</div>')
+        list_html = (
+            f'<div class="ranking-grid" style="--ranking-grid-columns: {grid_columns};">'
+            f'{"".join(column_html)}'
+            '</div>'
+        )
+    elif two_column_top20:
+        while len(row_html) < 20:
+            row_html.append(
+                (
+                    '<div class="ranking-row ranking-row-empty">'
+                    '<div class="ranking-left">'
+                    '<div class="ranking-rank">0</div>'
+                    f'<div class="ranking-brand">{html.escape(name_label)}</div>'
+                    '</div>'
+                    '<div class="ranking-score">0</div>'
+                    '</div>'
+                )
+            )
+        list_html = (
+            '<div class="ranking-grid" style="--ranking-grid-columns: 2;">'
+            f'<div class="ranking-list">{"".join(row_html[:10])}</div>'
+            f'<div class="ranking-list">{"".join(row_html[10:20])}</div>'
+            '</div>'
+        )
+    else:
+        list_class = "ranking-list ranking-list-scroll" if scrollable else "ranking-list"
+        list_style = f' style="max-height: {scroll_height_px}px;"' if scrollable and scroll_height_px else ""
+        list_html = f'<div class="{list_class}"{list_style}>{"".join(row_html)}</div>'
+
+    header_html = (
+        '<div class="ranking-header">'
+        f'<div class="ranking-header-left">{html.escape(name_label)}</div>'
+        f'<div class="ranking-header-right">{html.escape(value_label)}</div>'
+        '</div>'
+    )
+
+    st.markdown(
+        (
+            f'<div class="ranking-card {html.escape(card_class).strip()}">'
+            f'<div class="chart-card-title">{html.escape(title)}</div>'
+            f'{header_html}'
+            f'{list_html}'
+            f'</div>'
+        ),
+        unsafe_allow_html=True,
+    )
+
+
+def render_visibility_ranking_list(table_df: pd.DataFrame, title: str):
+    render_ranking_list(
+        table_df,
+        title,
+        "Brand",
+        "Brand Name",
+        "Visibility Score",
+        "Visibility Score",
+        grid_columns=3,
+        items_per_column=5,
+    )
+
+
+def render_presence_ranking_list(table_df: pd.DataFrame, title: str):
+    render_ranking_list(
+        table_df,
+        title,
+        "Brand",
+        "Brand Name",
+        "Brand Mention",
+        "Presence Volume",
+        grid_columns=3,
+        items_per_column=5,
+        card_class="ranking-card-brand",
+    )
+
+
+def render_channel_ranking_list(table_df: pd.DataFrame, title: str):
+    render_ranking_list(
+        table_df,
+        title,
+        "Channel",
+        "Channel Name",
+        "Channel Mention",
+        "Channel Mention",
+        grid_columns=3,
+        items_per_column=5,
+        card_class="ranking-card-channel",
+    )
+
+
+def render_source_ranking_list(
+    table_df: pd.DataFrame,
+    title: str,
+    value_column: str,
+    value_label: str,
+    grid_columns: int | None = None,
+    items_per_column: int | None = None,
+    scrollable: bool = False,
+    scroll_height_px: int | None = None,
+    card_class: str = "",
+):
+    render_ranking_list(
+        table_df,
+        title,
+        "Source",
+        "Source Name",
+        value_column,
+        value_label,
+        scrollable=scrollable,
+        scroll_height_px=scroll_height_px,
+        grid_columns=grid_columns,
+        items_per_column=items_per_column,
+        card_class=card_class,
+    )
+
+
+def render_source_name_list(
+    table_df: pd.DataFrame,
+    title: str,
+    grid_columns: int = 2,
+    items_per_column: int = 10,
+    card_class: str = "",
+):
+    if table_df is None or table_df.empty or "Source" not in table_df.columns:
+        st.info("No data available")
+        return
+
+    source_df = table_df[["Source"]].copy().head(grid_columns * items_per_column)
+    source_df["Label"] = ""
+    render_ranking_list(
+        source_df,
+        title,
+        "Source",
+        "Source Name",
+        "Label",
+        "",
+        grid_columns=grid_columns,
+        items_per_column=items_per_column,
+        card_class=card_class,
+    )
+
+
+def render_metric_table_card(
+    table_df: pd.DataFrame,
+    title: str,
+    name_column: str,
+    name_label: str,
+    value_column: str,
+    value_label: str,
+    height: int = 360,
+):
+    ranking_card_start(title)
+    if table_df is None or table_df.empty or name_column not in table_df.columns or value_column not in table_df.columns:
+        st.info("No data available")
+        ranking_card_end()
+        return
+
+    display_df = table_df[[name_column, value_column]].copy()
+    display_df.columns = [name_label, value_label]
+    st.dataframe(
+        display_df,
+        use_container_width=True,
+        hide_index=True,
+        height=height,
+    )
+    ranking_card_end()
+
+
+def render_designed_metric_table_card(
+    table_df: pd.DataFrame,
+    title: str,
+    name_column: str,
+    name_label: str,
+    value_column: str,
+    value_label: str,
+    height: int = 360,
+):
+    ranking_card_start(title)
+    if table_df is None or table_df.empty or name_column not in table_df.columns or value_column not in table_df.columns:
+        st.info("No data available")
+        ranking_card_end()
+        return
+
+    body_rows = []
+    for _, row in table_df.iterrows():
+        name_text = html.escape(str(row.get(name_column, "")).strip())
+        raw_value = row.get(value_column, "")
+        if pd.isna(raw_value):
+            value_text = "-"
+        else:
+            value_text = html.escape(str(raw_value).strip())
+
+        body_rows.append(
+            '<div class="metric-table-row">'
+            f'<div class="metric-table-cell">{name_text}</div>'
+            f'<div class="metric-table-cell metric-table-value">{value_text}</div>'
+            '</div>'
+        )
+
+    st.markdown(
+        (
+            '<div class="metric-table-shell">'
+            '<div class="metric-table-header">'
+            f'<div class="metric-table-head-cell">{html.escape(name_label)}</div>'
+            f'<div class="metric-table-head-cell metric-table-head-value">{html.escape(value_label)}</div>'
+            '</div>'
+            f'<div class="metric-table-body" style="max-height: {int(height)}px;">'
+            f'{"".join(body_rows)}'
+            '</div>'
+            '</div>'
+        ),
+        unsafe_allow_html=True,
+    )
+    ranking_card_end()
 
 
 def _sync_workspace_page_from_nav():
@@ -570,8 +1283,6 @@ def render_top_nav():
     if st.session_state.get("workspace_page_nav") != st.session_state.page:
         st.session_state.workspace_page_nav = st.session_state.page
 
-    # Keep `page` as the single routing source of truth. The nav widget uses a
-    # separate key so a stale widget value cannot overwrite the active page.
     st.segmented_control(
         "Navigation",
         options=WORKSPACE_NAV_OPTIONS,
@@ -799,9 +1510,6 @@ def _prepare_metrics_compatibility(
     presence_df: pd.DataFrame,
     source_df: pd.DataFrame,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """
-    Keep compatibility with old/new metrics expectations.
-    """
     p = presence_df.copy()
     s = source_df.copy()
 
@@ -819,6 +1527,104 @@ def _prepare_metrics_compatibility(
             p["entity_name"] = ""
 
     return p, s
+
+
+def _attach_entity_mapping_flags(project_id: int, presence_df: pd.DataFrame) -> pd.DataFrame:
+    p = presence_df.copy()
+    if p.empty or "entity_name_cn" not in p.columns:
+        return p
+
+    if "sinodis_flag" in p.columns:
+        p = p.drop(columns=["sinodis_flag"])
+
+    mapping_df = getattr(db_module, "get_all_entity_mappings", lambda _project_id: pd.DataFrame())(project_id)
+    if mapping_df is None or mapping_df.empty or "entity_name_cn" not in mapping_df.columns:
+        p["sinodis_flag"] = "N"
+        return p
+
+    mapping = mapping_df.copy()
+    mapping["entity_name_cn"] = mapping["entity_name_cn"].fillna("").astype(str).str.strip()
+    mapping["sinodis_flag"] = (
+        mapping.get("sinodis_flag", "N")
+        .fillna("N")
+        .astype(str)
+        .str.strip()
+        .str.upper()
+    )
+    mapping = mapping[mapping["entity_name_cn"] != ""]
+    mapping = mapping.drop_duplicates(subset=["entity_name_cn"], keep="last")
+
+    p["entity_name_cn"] = p["entity_name_cn"].fillna("").astype(str).str.strip()
+    p = p.merge(
+        mapping[["entity_name_cn", "sinodis_flag"]],
+        on="entity_name_cn",
+        how="left",
+    )
+    p["sinodis_flag"] = p["sinodis_flag"].fillna("N").astype(str).str.strip().str.upper()
+    return p
+
+
+def _filter_presence_by_query_kind(presence_df: pd.DataFrame, kind: str) -> pd.DataFrame:
+    p = presence_df.copy()
+    if p.empty or "query_type" not in p.columns:
+        return p
+
+    kind_text = str(kind).strip().lower()
+    if kind_text == "":
+        return p
+
+    query_type_series = p["query_type"].fillna("").astype(str).str.strip().str.lower()
+    return p[query_type_series.str.contains(kind_text, na=False)].reset_index(drop=True)
+
+
+def _build_brand_only_payload(
+    presence_df: pd.DataFrame,
+    visibility_category: str,
+    selected_publish_month_value: str,
+) -> dict:
+    payload = {}
+
+    payload["brand_ranking_table"] = build_brand_ranking_table(presence_df)
+    payload["brand_ranking_chart"] = build_brand_ranking_chart_from_table(payload["brand_ranking_table"])
+
+    payload["brand_visibility_by_publish_month_table"] = build_brand_visibility_by_publish_month_table(presence_df)
+    payload["brand_visibility_by_publish_month_chart"] = build_brand_visibility_by_publish_month_chart_from_table(
+        payload["brand_visibility_by_publish_month_table"]
+    )
+
+    payload["brand_visibility_by_record_month_table"] = build_brand_visibility_by_record_month_table(presence_df)
+    payload["brand_visibility_by_record_month_chart"] = build_brand_visibility_by_record_month_chart_from_table(
+        payload["brand_visibility_by_record_month_table"]
+    )
+
+    if visibility_category:
+        title = "Brand Visibility Ranking" if not visibility_category else f"Brand Visibility Ranking - {visibility_category}"
+        payload["brand_visibility_by_category_table"] = build_brand_visibility_by_category_table(
+            presence_df,
+            visibility_category,
+        )
+        payload["brand_visibility_by_category_chart"] = build_brand_visibility_by_category_chart_from_table(
+            payload["brand_visibility_by_category_table"],
+            title=title,
+        )
+
+    if visibility_category and selected_publish_month_value:
+        title = f"Brand Visibility - {visibility_category} / {selected_publish_month_value}"
+        payload["brand_visibility_by_category_and_publish_month_table"] = (
+            build_brand_visibility_by_category_and_publish_month_table(
+                presence_df,
+                visibility_category,
+                selected_publish_month_value,
+            )
+        )
+        payload["brand_visibility_by_category_and_publish_month_chart"] = (
+            build_brand_visibility_by_category_chart_from_table(
+                payload["brand_visibility_by_category_and_publish_month_table"],
+                title=title,
+            )
+        )
+
+    return payload
 
 
 def _filter_queries_for_dashboard(
@@ -897,6 +1703,7 @@ def _average_table_from_payloads(
     sort_by: list[str],
     ascending: list[bool],
     format_coverage_rate: bool = False,
+    nested_table_key: str | None = None,
 ) -> pd.DataFrame:
     if not payloads:
         return pd.DataFrame(columns=key_cols + numeric_cols)
@@ -905,6 +1712,8 @@ def _average_table_from_payloads(
     key_seen = set()
     for payload in payloads:
         table = payload.get(table_key, pd.DataFrame())
+        if nested_table_key:
+            table = table.get(nested_table_key, pd.DataFrame()) if isinstance(table, dict) else pd.DataFrame()
         if table is None or table.empty:
             continue
         for _, row in table.iterrows():
@@ -923,6 +1732,8 @@ def _average_table_from_payloads(
         numeric_totals = {col: 0.0 for col in numeric_cols}
         for payload in payloads:
             table = payload.get(table_key, pd.DataFrame())
+            if nested_table_key:
+                table = table.get(nested_table_key, pd.DataFrame()) if isinstance(table, dict) else pd.DataFrame()
             if table is None or table.empty:
                 row = None
             else:
@@ -1004,12 +1815,48 @@ def _build_average_dashboard_payload(
             sort_by=["Source", "AI Platform"],
             ascending=[True, True],
         ),
+        "source_platform_common_table": _average_table_from_payloads(
+            creator_payloads,
+            table_key="source_platform_comparison_tables",
+            nested_table_key="common",
+            key_cols=["Source"],
+            numeric_cols=["Total Occurrence", "Doubao Occurrence", "Deepseek Occurrence"],
+            sort_by=["Total Occurrence", "Doubao Occurrence", "Deepseek Occurrence"],
+            ascending=[False, False, False],
+        ),
+        "source_platform_doubao_only_table": _average_table_from_payloads(
+            creator_payloads,
+            table_key="source_platform_comparison_tables",
+            nested_table_key="primary_only",
+            key_cols=["Source"],
+            numeric_cols=["Doubao Occurrence"],
+            sort_by=["Doubao Occurrence"],
+            ascending=[False],
+        ),
+        "source_platform_deepseek_only_table": _average_table_from_payloads(
+            creator_payloads,
+            table_key="source_platform_comparison_tables",
+            nested_table_key="secondary_only",
+            key_cols=["Source"],
+            numeric_cols=["Deepseek Occurrence"],
+            sort_by=["Deepseek Occurrence"],
+            ascending=[False],
+        ),
         "brand_visibility_by_publish_month_table": _average_table_from_payloads(
             creator_payloads,
             table_key="brand_visibility_by_publish_month_table",
             key_cols=["Publish Month", "Brand"],
             numeric_cols=["Covered Queries", "Query Pool", "Coverage Rate", "Avg Best Position", "Visibility Score"],
             sort_by=["Publish Month", "Visibility Score", "Coverage Rate", "Avg Best Position"],
+            ascending=[True, False, False, True],
+            format_coverage_rate=True,
+        ),
+        "brand_visibility_by_record_month_table": _average_table_from_payloads(
+            creator_payloads,
+            table_key="brand_visibility_by_record_month_table",
+            key_cols=["Record Month", "Brand"],
+            numeric_cols=["Covered Queries", "Query Pool", "Coverage Rate", "Avg Best Position", "Visibility Score"],
+            sort_by=["Record Month", "Visibility Score", "Coverage Rate", "Avg Best Position"],
             ascending=[True, False, False, True],
             format_coverage_rate=True,
         ),
@@ -1024,6 +1871,9 @@ def _build_average_dashboard_payload(
     )
     payload["brand_visibility_by_publish_month_chart"] = build_brand_visibility_by_publish_month_chart_from_table(
         payload["brand_visibility_by_publish_month_table"]
+    )
+    payload["brand_visibility_by_record_month_chart"] = build_brand_visibility_by_record_month_chart_from_table(
+        payload["brand_visibility_by_record_month_table"]
     )
 
     if visibility_category:
@@ -1188,9 +2038,9 @@ def render_dashboard():
     render_top_nav()
 
     with st.container():
-        st.markdown('<div class="dashboard-filters-shell">', unsafe_allow_html=True)
+        st.markdown('<div class="dashboard-filters-marker"></div>', unsafe_allow_html=True)
         st.markdown('<div class="dashboard-filters-title">Dashboard Filters</div>', unsafe_allow_html=True)
-        f1, f2, f3, f4 = st.columns(4)
+        f1, f2, f3, f4, f5 = st.columns(5)
 
         with f1:
             query_status_filter = st.selectbox(
@@ -1227,6 +2077,7 @@ def render_dashboard():
             presence_enriched,
             source_enriched
         )
+        presence_enriched = _attach_entity_mapping_flags(int(project["project_id"]), presence_enriched)
 
         query_type_options = ["All"] + filter_options.get("query_type", [])
         record_month_options = ["All"] + filter_options.get("record_month", [])
@@ -1244,18 +2095,24 @@ def render_dashboard():
         with f4:
             selected_category = st.selectbox("Product Category", product_category_options)
 
-        f5, f6, f7, f8 = st.columns(4)
-
         with f5:
-            selected_platform = st.selectbox("AI Platform", ai_platform_options)
+            selected_sinodis_brand = st.selectbox(
+                "Sinodis Brand",
+                ["All", "Sinodis", "Non-Sinodis"],
+            )
+
+        f6, f7, f8, f9 = st.columns(4)
 
         with f6:
-            selected_query_numbers = st.multiselect("Query Number", query_number_options)
+            selected_platform = st.selectbox("AI Platform", ai_platform_options)
 
         with f7:
-            selected_creators = st.multiselect("Created By", creator_options, default=["All"])
+            selected_query_numbers = st.multiselect("Query Number", query_number_options)
 
         with f8:
+            selected_creators = st.multiselect("Created By", creator_options, default=["All"])
+
+        with f9:
             selected_publish_month = st.selectbox(
                 "Publish Month",
                 ["All"] + MONTHS
@@ -1281,8 +2138,6 @@ def render_dashboard():
         else:
             selected_check_date_range = None
             st.caption("No check_date available yet.")
-
-        st.markdown("</div>", unsafe_allow_html=True)
 
     all_creators_mode = (not selected_creators) or ("All" in selected_creators)
     creator_filter_list = None if all_creators_mode else selected_creators
@@ -1311,6 +2166,8 @@ def render_dashboard():
         presence_filtered,
         source_filtered
     )
+    presence_filtered = _attach_entity_mapping_flags(int(project["project_id"]), presence_filtered)
+    content_publish_filtered = get_all_content_publish(int(project["project_id"]))
 
     queries_filtered = _filter_queries_for_dashboard(
         queries_df=queries_df,
@@ -1333,9 +2190,23 @@ def render_dashboard():
             source_filtered = source_filtered[
                 source_filtered["query_number"].astype(str).isin(filtered_query_pool)
             ].reset_index(drop=True)
+        if not content_publish_filtered.empty and "query_id" in content_publish_filtered.columns:
+            content_publish_filtered = content_publish_filtered[
+                content_publish_filtered["query_id"].astype(str).isin(filtered_query_pool)
+            ].reset_index(drop=True)
     else:
         presence_filtered = presence_filtered.iloc[0:0].copy()
         source_filtered = source_filtered.iloc[0:0].copy()
+        content_publish_filtered = content_publish_filtered.iloc[0:0].copy()
+
+    if (
+        selected_platform != "All"
+        and not content_publish_filtered.empty
+        and "publish_platform" in content_publish_filtered.columns
+    ):
+        content_publish_filtered = content_publish_filtered[
+            content_publish_filtered["publish_platform"].astype(str).str.strip() == str(selected_platform).strip()
+        ].reset_index(drop=True)
 
     visibility_category = "" if selected_category == "All" else selected_category
 
@@ -1345,9 +2216,46 @@ def render_dashboard():
         queries_df=queries_filtered,
         presence_df=presence_filtered,
         source_df=source_filtered,
+        content_publish_df=content_publish_filtered,
         selected_category=visibility_category,
         selected_publish_month=selected_publish_month_value,
     )
+
+    brand_presence_filtered = _filter_presence_by_query_kind(presence_filtered, "generic")
+
+    if selected_sinodis_brand != "All" and not brand_presence_filtered.empty and "sinodis_flag" in brand_presence_filtered.columns:
+        target_flag = "Y" if selected_sinodis_brand == "Sinodis" else "N"
+        brand_presence_filtered = brand_presence_filtered[
+            brand_presence_filtered["sinodis_flag"].astype(str).str.strip().str.upper() == target_flag
+        ].reset_index(drop=True)
+
+    brand_payload = _build_brand_only_payload(
+        presence_df=brand_presence_filtered,
+        visibility_category=visibility_category,
+        selected_publish_month_value=selected_publish_month_value,
+    )
+
+    for key in [
+        "brand_ranking_table",
+        "brand_ranking_chart",
+        "brand_visibility_by_publish_month_table",
+        "brand_visibility_by_publish_month_chart",
+        "brand_visibility_by_record_month_table",
+        "brand_visibility_by_record_month_chart",
+    ]:
+        if key in brand_payload:
+            payload[key] = brand_payload[key]
+
+    for optional_key in [
+        "brand_visibility_by_category_table",
+        "brand_visibility_by_category_chart",
+        "brand_visibility_by_category_and_publish_month_table",
+        "brand_visibility_by_category_and_publish_month_chart",
+    ]:
+        if optional_key in brand_payload:
+            payload[optional_key] = brand_payload[optional_key]
+        elif optional_key in payload:
+            del payload[optional_key]
 
     kpis = payload["kpis"]
 
@@ -1359,63 +2267,65 @@ def render_dashboard():
     with k3:
         render_kpi_card("Quote Rate", f"{kpis['Quote Rate']}")
 
+    visibility_ranking_title = (
+        "Brand Visibility Ranking"
+        if not visibility_category
+        else f"Brand Visibility Ranking - {visibility_category}"
+    )
+    visibility_ranking_table = payload.get("brand_visibility_by_category_table", pd.DataFrame())
+
     section_card_start()
     render_section_header(
         "Presence Analysis",
         "Compare brand performance, channel mentions, and category visibility under the current filters."
     )
+    render_presence_ranking_list(payload["brand_ranking_table"], "Brand Presence Ranking")
+    render_visibility_ranking_list(visibility_ranking_table, visibility_ranking_title)
 
-    c1, c2 = st.columns(2)
-
-    with c1:
-        chart_card_start("Brand Ranking")
-        st.plotly_chart(payload["brand_ranking_chart"], use_container_width=True)
-        if not payload["brand_ranking_table"].empty:
-            st.dataframe(payload["brand_ranking_table"].head(15), use_container_width=True, hide_index=True)
-        chart_card_end()
-
-    with c2:
-        chart_card_start("Channel Ranking")
-        st.plotly_chart(payload["channel_ranking_chart"], use_container_width=True)
-        if not payload["channel_ranking_table"].empty:
-            st.dataframe(payload["channel_ranking_table"].head(15), use_container_width=True, hide_index=True)
-        chart_card_end()
-    section_card_end()
-
-    section_card_start()
-    render_section_header(
-        "Brand Visibility",
-        "Review category visibility and how brand visibility changes across publish months."
-    )
-
-    chart_card_start(
-        "Brand Visibility Ranking" if not visibility_category
-        else f"Brand Visibility Ranking - {visibility_category}"
-    )
-
-    if "brand_visibility_by_category_chart" in payload:
-        st.plotly_chart(
-            payload["brand_visibility_by_category_chart"],
-            use_container_width=True
+    chart_card_start(f"{visibility_ranking_title} Table")
+    if not visibility_ranking_table.empty:
+        table_height = min(680, 42 + (len(visibility_ranking_table) + 1) * 35)
+        st.dataframe(
+            visibility_ranking_table,
+            use_container_width=True,
+            hide_index=True,
+            height=table_height,
         )
     else:
         st.info("No data available")
+    chart_card_end()
 
-    if "brand_visibility_by_category_table" in payload and not payload["brand_visibility_by_category_table"].empty:
+    chart_card_start("Brand Visibility Score by Record Month")
+    st.plotly_chart(payload["brand_visibility_by_record_month_chart"], use_container_width=True)
+    record_month_visibility_table = payload.get("brand_visibility_by_record_month_table", pd.DataFrame())
+    if not record_month_visibility_table.empty:
+        display_columns = [
+            col for col in ["Record Month", "Brand", "Visibility Score"]
+            if col in record_month_visibility_table.columns
+        ]
         st.dataframe(
-            payload["brand_visibility_by_category_table"].head(20),
+            record_month_visibility_table[display_columns],
             use_container_width=True,
-            hide_index=True
+            hide_index=True,
+            height=248,
         )
-
+    else:
+        st.info("No data available")
     chart_card_end()
 
-    chart_card_start("Brand Visibility by Publish Month")
-    st.plotly_chart(payload["brand_visibility_by_publish_month_chart"], use_container_width=True)
-    brand_month_table = payload.get("brand_visibility_by_publish_month_table", pd.DataFrame())
-    if not brand_month_table.empty:
-        st.dataframe(brand_month_table.head(30), use_container_width=True, hide_index=True)
-    chart_card_end()
+    render_channel_ranking_list(payload["channel_ranking_table"], "Channel Ranking")
+    ranking_card_start("Channel Ranking Table")
+    if not payload["channel_ranking_table"].empty:
+        st.dataframe(
+            payload["channel_ranking_table"].head(15),
+            use_container_width=True,
+            hide_index=True,
+            height=248,
+        )
+    else:
+        st.info("No data available")
+    ranking_card_end()
+    section_card_end()
 
     if (
         visibility_category
@@ -1434,7 +2344,6 @@ def render_dashboard():
                 hide_index=True,
             )
         chart_card_end()
-    section_card_end()
 
     section_card_start()
     render_section_header(
@@ -1447,23 +2356,68 @@ def render_dashboard():
     with s1:
         chart_card_start("Source Frequency Ranking")
         st.plotly_chart(payload["source_occurrence_chart"], use_container_width=True)
-        if not payload["source_occurrence_table"].empty:
-            st.dataframe(payload["source_occurrence_table"].head(15), use_container_width=True, hide_index=True)
         chart_card_end()
 
     with s2:
-        chart_card_start("Quoted Source Ranking")
-        st.plotly_chart(payload["quoted_source_chart"], use_container_width=True)
-        if not payload["quoted_source_table"].empty:
-            st.dataframe(payload["quoted_source_table"].head(15), use_container_width=True, hide_index=True)
-        chart_card_end()
+        render_designed_metric_table_card(
+            payload["quoted_source_table"],
+            "Quoted Source Ranking",
+            "Source",
+            "Source Name",
+            "Quoted Source number",
+            "Quoted Source Number",
+            height=356,
+        )
 
-    chart_card_start("Source Distribution by AI Platform")
-    st.plotly_chart(payload["source_distribution_by_platform_chart"], use_container_width=True)
-    source_distribution_table = payload.get("source_distribution_by_platform_table", pd.DataFrame())
-    if not source_distribution_table.empty:
-        st.dataframe(source_distribution_table, use_container_width=True, hide_index=True)
-    chart_card_end()
+    source_platform_comparison = payload.get("source_platform_comparison_tables", {})
+    source_common_table = payload.get(
+        "source_platform_common_table",
+        source_platform_comparison.get("common", pd.DataFrame()) if isinstance(source_platform_comparison, dict) else pd.DataFrame(),
+    )
+    source_doubao_only_table = payload.get(
+        "source_platform_doubao_only_table",
+        source_platform_comparison.get("primary_only", pd.DataFrame()) if isinstance(source_platform_comparison, dict) else pd.DataFrame(),
+    )
+    source_deepseek_only_table = payload.get(
+        "source_platform_deepseek_only_table",
+        source_platform_comparison.get("secondary_only", pd.DataFrame()) if isinstance(source_platform_comparison, dict) else pd.DataFrame(),
+    )
+
+    comparison_left, comparison_right = st.columns([0.72, 1.28])
+
+    st.markdown(
+        '<div class="subsection-kicker">Source Preference Summary</div>',
+        unsafe_allow_html=True,
+    )
+
+    with comparison_left:
+        render_source_name_list(
+            source_common_table,
+            "Common Preferred Sources Across Platform",
+            grid_columns=1,
+            items_per_column=20,
+            card_class="ranking-card-source-common",
+        )
+
+    with comparison_right:
+        render_source_ranking_list(
+            source_doubao_only_table,
+            "Doubao Only Sources",
+            "Doubao Occurrence",
+            "Doubao Occurrence",
+            grid_columns=2,
+            items_per_column=10,
+            card_class="ranking-card-source-doubao",
+        )
+        render_source_ranking_list(
+            source_deepseek_only_table,
+            "Deepseek Only Sources",
+            "Deepseek Occurrence",
+            "Deepseek Occurrence",
+            grid_columns=2,
+            items_per_column=10,
+            card_class="ranking-card-source-deepseek",
+        )
     section_card_end()
 
     show_filtered_preview = st.toggle("Show Filtered Data Preview", value=False, key="dashboard_filtered_preview_toggle")

@@ -219,6 +219,25 @@ def _normalize_source_df(source_df: pd.DataFrame) -> pd.DataFrame:
     return source_df
 
 
+def _normalize_content_publish_df(content_publish_df: pd.DataFrame) -> pd.DataFrame:
+    content_publish_df = _safe_df(content_publish_df)
+    if content_publish_df.empty:
+        return content_publish_df
+
+    for col in [
+        "query_id",
+        "publish_platform",
+        "publish_url",
+    ]:
+        if col in content_publish_df.columns:
+            content_publish_df[col] = _normalize_text_series(content_publish_df[col])
+
+    if "quoted_or_not" in content_publish_df.columns:
+        content_publish_df["quoted_or_not"] = content_publish_df["quoted_or_not"].apply(_normalize_yes_no)
+
+    return content_publish_df
+
+
 def _position_to_score(pos) -> int:
     try:
         pos = int(pos)
@@ -245,15 +264,20 @@ def _position_to_score(pos) -> int:
 # =========================================================
 # KPI Metrics
 # =========================================================
-def compute_kpis(presence_df: pd.DataFrame, source_df: pd.DataFrame) -> dict:
+def compute_kpis(
+    presence_df: pd.DataFrame,
+    source_df: pd.DataFrame,
+    content_publish_df: pd.DataFrame | None = None,
+) -> dict:
     """
     KPI logic:
     - total_queries: distinct query_number in filtered pool
     - source_occurance: sum of occurrence_number
-    - quote_rate: quoted records / total source records
+    - quote_rate: content publish quoted URLs / total published URLs
     """
     presence_df = _normalize_presence_df(presence_df)
     source_df = _normalize_source_df(source_df)
+    content_publish_df = _normalize_content_publish_df(content_publish_df)
 
     query_pool = set()
 
@@ -274,10 +298,14 @@ def compute_kpis(presence_df: pd.DataFrame, source_df: pd.DataFrame) -> dict:
     else:
         source_occurance = 0
 
-    if not source_df.empty:
-        total_source_records = len(source_df)
-        quoted_records = len(source_df[source_df["quoted_or_not"] == "Y"]) if "quoted_or_not" in source_df.columns else 0
-        quote_rate = (quoted_records / total_source_records) if total_source_records > 0 else 0.0
+    if not content_publish_df.empty:
+        total_publish_urls = len(content_publish_df)
+        quoted_records = (
+            len(content_publish_df[content_publish_df["quoted_or_not"] == "Y"])
+            if "quoted_or_not" in content_publish_df.columns
+            else 0
+        )
+        quote_rate = (quoted_records / total_publish_urls) if total_publish_urls > 0 else 0.0
     else:
         quote_rate = 0.0
 
@@ -621,6 +649,92 @@ def get_source_distribution_by_platform(source_df: pd.DataFrame, top_n: int = 10
     return distribution
 
 
+def get_source_platform_comparison(
+    source_df: pd.DataFrame,
+    primary_platform: str = "Doubao",
+    secondary_platform: str = "Deepseek",
+    top_n: int = 20,
+) -> dict[str, pd.DataFrame]:
+    source_df = _normalize_source_df(source_df)
+    empty_common = pd.DataFrame(
+        columns=["Source", "Total Occurrence", f"{primary_platform} Occurrence", f"{secondary_platform} Occurrence"]
+    )
+    empty_primary = pd.DataFrame(columns=["Source", f"{primary_platform} Occurrence"])
+    empty_secondary = pd.DataFrame(columns=["Source", f"{secondary_platform} Occurrence"])
+
+    if source_df.empty:
+        return {"common": empty_common, "primary_only": empty_primary, "secondary_only": empty_secondary}
+
+    needed_cols = {"source_name", "ai_platform", "occurrence_number"}
+    if not needed_cols.issubset(source_df.columns):
+        return {"common": empty_common, "primary_only": empty_primary, "secondary_only": empty_secondary}
+
+    working = source_df[
+        (source_df["source_name"] != "") &
+        (source_df["ai_platform"] != "")
+    ].copy()
+    if working.empty:
+        return {"common": empty_common, "primary_only": empty_primary, "secondary_only": empty_secondary}
+
+    platform_norm = working["ai_platform"].astype(str).str.strip().str.lower()
+    primary_df = working[platform_norm == primary_platform.strip().lower()].copy()
+    secondary_df = working[platform_norm == secondary_platform.strip().lower()].copy()
+
+    if primary_df.empty and secondary_df.empty:
+        return {"common": empty_common, "primary_only": empty_primary, "secondary_only": empty_secondary}
+
+    def _top_platform_sources(df: pd.DataFrame, label: str) -> pd.DataFrame:
+        if df.empty:
+            return pd.DataFrame(columns=["Source", f"{label} Occurrence"])
+        out = (
+            df.groupby("source_name", as_index=False)
+            .agg(**{f"{label} Occurrence": ("occurrence_number", "sum")})
+            .rename(columns={"source_name": "Source"})
+            .sort_values(by=f"{label} Occurrence", ascending=False)
+            .head(top_n)
+            .reset_index(drop=True)
+        )
+        out[f"{label} Occurrence"] = out[f"{label} Occurrence"].astype(int)
+        return out
+
+    primary_top = _top_platform_sources(primary_df, primary_platform)
+    secondary_top = _top_platform_sources(secondary_df, secondary_platform)
+
+    primary_sources = set(primary_top["Source"].tolist())
+    secondary_sources = set(secondary_top["Source"].tolist())
+    common_sources = primary_sources & secondary_sources
+    primary_only_sources = primary_sources - secondary_sources
+    secondary_only_sources = secondary_sources - primary_sources
+
+    primary_lookup = dict(zip(primary_top["Source"], primary_top[f"{primary_platform} Occurrence"]))
+    secondary_lookup = dict(zip(secondary_top["Source"], secondary_top[f"{secondary_platform} Occurrence"]))
+
+    common_rows = [
+        {
+            "Source": source,
+            f"{primary_platform} Occurrence": primary_lookup.get(source, 0),
+            f"{secondary_platform} Occurrence": secondary_lookup.get(source, 0),
+            "Total Occurrence": primary_lookup.get(source, 0) + secondary_lookup.get(source, 0),
+        }
+        for source in common_sources
+    ]
+    common_df = pd.DataFrame(common_rows)
+    if not common_df.empty:
+        common_df = common_df.sort_values(
+            by=["Total Occurrence", f"{primary_platform} Occurrence", f"{secondary_platform} Occurrence", "Source"],
+            ascending=[False, False, False, True],
+        ).reset_index(drop=True)
+
+    primary_only_df = primary_top[primary_top["Source"].isin(primary_only_sources)].reset_index(drop=True)
+    secondary_only_df = secondary_top[secondary_top["Source"].isin(secondary_only_sources)].reset_index(drop=True)
+
+    return {
+        "common": common_df if not common_df.empty else empty_common,
+        "primary_only": primary_only_df if not primary_only_df.empty else empty_primary,
+        "secondary_only": secondary_only_df if not secondary_only_df.empty else empty_secondary,
+    }
+
+
 def get_quoted_source_ranking(source_df: pd.DataFrame) -> pd.DataFrame:
     """
     Output columns:
@@ -654,22 +768,26 @@ def get_quoted_source_ranking(source_df: pd.DataFrame) -> pd.DataFrame:
     return ranking
 
 
-def get_quote_rate(source_df: pd.DataFrame) -> dict:
+def get_quote_rate(content_publish_df: pd.DataFrame) -> dict:
     """
     Quote rate is calculated by record count:
-    quoted_or_not == Y records / total source records
+    quoted_or_not == Y records / total publish_url records
     """
-    source_df = _normalize_source_df(source_df)
+    content_publish_df = _normalize_content_publish_df(content_publish_df)
 
-    if source_df.empty:
+    if content_publish_df.empty:
         return {
             "quoted_records": 0,
             "total_records": 0,
             "quote_rate": 0.0,
         }
 
-    total_records = len(source_df)
-    quoted_records = len(source_df[source_df["quoted_or_not"] == "Y"]) if "quoted_or_not" in source_df.columns else 0
+    total_records = len(content_publish_df)
+    quoted_records = (
+        len(content_publish_df[content_publish_df["quoted_or_not"] == "Y"])
+        if "quoted_or_not" in content_publish_df.columns
+        else 0
+    )
     quote_rate = quoted_records / total_records if total_records > 0 else 0.0
 
     return {
@@ -807,4 +925,88 @@ def get_brand_visibility_by_publish_month(presence_df: pd.DataFrame) -> pd.DataF
         ascending=[True, False, False, True]
     ).drop(columns="_sort").reset_index(drop=True)
 
+    return out
+
+
+def get_brand_visibility_by_record_month(presence_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Calculate brand visibility by record month.
+    Output:
+    - Record Month
+    - Brand
+    - Covered Queries
+    - Query Pool
+    - Coverage Rate
+    - Avg Best Position
+    - Visibility Score
+    """
+    presence_df = _normalize_presence_df(presence_df)
+    if presence_df.empty or "record_month" not in presence_df.columns:
+        return pd.DataFrame(columns=[
+            "Record Month", "Brand", "Covered Queries", "Query Pool",
+            "Coverage Rate", "Avg Best Position", "Visibility Score"
+        ])
+
+    working_df = presence_df[presence_df["record_month"] != ""].copy()
+    if working_df.empty:
+        return pd.DataFrame(columns=[
+            "Record Month", "Brand", "Covered Queries", "Query Pool",
+            "Coverage Rate", "Avg Best Position", "Visibility Score"
+        ])
+
+    results = []
+
+    for month in working_df["record_month"].dropna().unique().tolist():
+        month_df = working_df[working_df["record_month"] == month].copy()
+        temp = month_df.dropna(subset=["query_number", "brand_display", "position"]).copy()
+        temp = temp[(temp["query_number"] != "") & (temp["brand_display"] != "")]
+        if temp.empty:
+            continue
+
+        query_pool = temp["query_number"].nunique()
+        per_query_best = (
+            temp.groupby(["query_number", "brand_display"], as_index=False)
+            .agg(best_position=("position", "min"))
+        )
+        per_query_best["reciprocal_rank"] = per_query_best["best_position"].apply(
+            lambda x: (1 / x) if pd.notna(x) and float(x) > 0 else 0
+        )
+
+        month_vis = (
+            per_query_best.groupby("brand_display", as_index=False)
+            .agg(
+                **{
+                    "Covered Queries": ("query_number", "nunique"),
+                    "Avg Best Position": ("best_position", "mean"),
+                    "Visibility Score Raw": ("reciprocal_rank", "sum"),
+                }
+            )
+            .rename(columns={"brand_display": "Brand"})
+        )
+
+        month_vis["Query Pool"] = query_pool
+        month_vis["Coverage Rate"] = (month_vis["Covered Queries"] / query_pool).round(4)
+        month_vis["Visibility Score"] = (
+            (month_vis["Visibility Score Raw"] / query_pool) * 5
+        ).round(2)
+        month_vis["Avg Best Position"] = month_vis["Avg Best Position"].round(2)
+        month_vis["Record Month"] = month
+        month_vis = month_vis[
+            ["Record Month", "Brand", "Covered Queries", "Query Pool", "Coverage Rate", "Avg Best Position", "Visibility Score"]
+        ]
+        results.append(month_vis)
+
+    if not results:
+        return pd.DataFrame(columns=[
+            "Record Month", "Brand", "Covered Queries", "Query Pool",
+            "Coverage Rate", "Avg Best Position", "Visibility Score"
+        ])
+
+    out = pd.concat(results, ignore_index=True)
+    month_order = {m: i for i, m in enumerate(MONTHS)}
+    out["_sort"] = out["Record Month"].map(month_order).fillna(9999)
+    out = out.sort_values(
+        by=["_sort", "Visibility Score", "Coverage Rate", "Avg Best Position"],
+        ascending=[True, False, False, True]
+    ).drop(columns="_sort").reset_index(drop=True)
     return out
