@@ -2296,8 +2296,50 @@ def render_dashboard():
     chart_card_end()
 
     chart_card_start("Brand Visibility Score by Record Month")
-    st.plotly_chart(payload["brand_visibility_by_record_month_chart"], use_container_width=True)
     record_month_visibility_table = payload.get("brand_visibility_by_record_month_table", pd.DataFrame())
+    record_month_compare_key = f"brand_visibility_record_month_compare_{int(project['project_id'])}"
+    available_record_month_brands = []
+    if not record_month_visibility_table.empty and "Brand" in record_month_visibility_table.columns:
+        available_record_month_brands = sorted(
+            {
+                str(value).strip()
+                for value in record_month_visibility_table["Brand"].dropna().tolist()
+                if str(value).strip()
+            }
+        )
+
+    current_record_month_selection = st.session_state.get(record_month_compare_key, [])
+    if not isinstance(current_record_month_selection, list):
+        current_record_month_selection = []
+    current_record_month_selection = [
+        brand for brand in current_record_month_selection if brand in available_record_month_brands
+    ]
+    st.session_state[record_month_compare_key] = current_record_month_selection
+
+    compare_col, clear_col = st.columns([6, 1])
+    with compare_col:
+        selected_record_month_brands = st.multiselect(
+            "Compare brands",
+            options=available_record_month_brands,
+            default=current_record_month_selection,
+            key=record_month_compare_key,
+        )
+    with clear_col:
+        st.markdown("<div style='height: 1.9rem;'></div>", unsafe_allow_html=True)
+        if st.button("Clear", key=f"{record_month_compare_key}_clear", use_container_width=True):
+            st.session_state[record_month_compare_key] = []
+            st.rerun()
+
+    filtered_record_month_chart = payload["brand_visibility_by_record_month_chart"]
+    if selected_record_month_brands and not record_month_visibility_table.empty and "Brand" in record_month_visibility_table.columns:
+        filtered_record_month_table = record_month_visibility_table[
+            record_month_visibility_table["Brand"].astype(str).isin(selected_record_month_brands)
+        ].reset_index(drop=True)
+        filtered_record_month_chart = build_brand_visibility_by_record_month_chart_from_table(
+            filtered_record_month_table
+        )
+
+    st.plotly_chart(filtered_record_month_chart, use_container_width=True)
     if not record_month_visibility_table.empty:
         display_columns = [
             col for col in ["Record Month", "Brand", "Visibility Score"]
