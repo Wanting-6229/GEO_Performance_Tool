@@ -173,6 +173,27 @@ def _sort_month_df(df: pd.DataFrame, month_col: str):
     return out
 
 
+def _month_category_order(df: pd.DataFrame, month_col: str) -> list[str]:
+    if df is None or df.empty or month_col not in df.columns:
+        return []
+    ordered = _sort_month_df(df[[month_col]].drop_duplicates().copy(), month_col)
+    return ordered[month_col].astype(str).tolist()
+
+
+def _sort_line_chart_df(df: pd.DataFrame, month_col: str) -> pd.DataFrame:
+    out = _sort_month_df(df, month_col)
+    sort_cols = []
+    ascending = []
+    if "Brand" in out.columns:
+        sort_cols.append("Brand")
+        ascending.append(True)
+    sort_cols.append(month_col)
+    ascending.append(True)
+    if sort_cols:
+        out = out.sort_values(sort_cols, ascending=ascending).reset_index(drop=True)
+    return out
+
+
 # =========================================================
 # KPI Cards Data
 # =========================================================
@@ -678,7 +699,8 @@ def build_brand_visibility_by_publish_month_chart_from_table(month_df: pd.DataFr
         return _empty_fig("Brand Visibility by Publish Month")
 
     chart_df = _parse_visibility_table(month_df).copy()
-    chart_df = _sort_month_df(chart_df, "Publish Month")
+    chart_df = _sort_line_chart_df(chart_df, "Publish Month")
+    month_order = _month_category_order(chart_df, "Publish Month")
     fig = px.line(
         chart_df,
         x="Publish Month",
@@ -686,6 +708,7 @@ def build_brand_visibility_by_publish_month_chart_from_table(month_df: pd.DataFr
         color="Brand" if "Brand" in chart_df.columns else None,
         markers=True,
         color_discrete_sequence=BI_SEQ,
+        category_orders={"Publish Month": month_order},
         hover_data={
             "Publish Month": True,
             "Brand": True if "Brand" in chart_df.columns else False,
@@ -717,7 +740,8 @@ def build_brand_visibility_by_record_month_chart(
     if month_df.empty:
         return _empty_fig("Brand Visibility Score by Record Month")
 
-    month_df = _sort_month_df(month_df, "Record Month")
+    month_df = _sort_line_chart_df(month_df, "Record Month")
+    month_order = _month_category_order(month_df, "Record Month")
     fig = px.line(
         month_df,
         x="Record Month",
@@ -725,6 +749,7 @@ def build_brand_visibility_by_record_month_chart(
         color="Brand" if not brand else None,
         markers=True,
         color_discrete_sequence=BI_LINE_SEQ,
+        category_orders={"Record Month": month_order},
         hover_data={
             "Record Month": True,
             "Brand": True if "Brand" in month_df.columns else False,
@@ -747,7 +772,8 @@ def build_brand_visibility_by_record_month_chart_from_table(month_df: pd.DataFra
         return _empty_fig("Brand Visibility Score by Record Month")
 
     chart_df = _parse_visibility_table(month_df).copy()
-    chart_df = _sort_month_df(chart_df, "Record Month")
+    chart_df = _sort_line_chart_df(chart_df, "Record Month")
+    month_order = _month_category_order(chart_df, "Record Month")
     fig = px.line(
         chart_df,
         x="Record Month",
@@ -755,6 +781,7 @@ def build_brand_visibility_by_record_month_chart_from_table(month_df: pd.DataFra
         color="Brand" if "Brand" in chart_df.columns else None,
         markers=True,
         color_discrete_sequence=BI_LINE_SEQ,
+        category_orders={"Record Month": month_order},
         hover_data={
             "Record Month": True,
             "Brand": True if "Brand" in chart_df.columns else False,
