@@ -715,6 +715,37 @@ def _create_content_publish_table(cursor: sqlite3.Cursor):
     """)
 
 
+def _ensure_postgres_column(
+    cursor,
+    table_name: str,
+    column_name: str,
+    column_sql: str,
+):
+    cursor.execute(
+        """
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = ?
+          AND column_name = ?
+        LIMIT 1
+        """,
+        (table_name, column_name),
+    )
+    exists = cursor.fetchone()
+    if exists:
+        return
+    cursor.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_sql}")
+
+
+def _ensure_postgres_schema_compatibility(cursor):
+    _ensure_postgres_column(cursor, "query_master", "updated_at", "TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP")
+    _ensure_postgres_column(cursor, "entity_mapping", "sinodis_flag", "TEXT NOT NULL DEFAULT 'N'")
+    _ensure_postgres_column(cursor, "entity_mapping", "updated_at", "TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP")
+    _ensure_postgres_column(cursor, "source_mapping", "updated_at", "TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP")
+    _ensure_postgres_column(cursor, "content_publish", "updated_at", "TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP")
+
+
 def _ensure_content_publish_table_exists():
     conn = get_connection()
     cursor = conn.cursor()
@@ -1075,6 +1106,8 @@ def _create_tables_postgres(cursor):
     CREATE INDEX IF NOT EXISTS idx_source_submission
     ON source_records(submission_id)
     """)
+
+    _ensure_postgres_schema_compatibility(cursor)
 
 
 def _migrate_query_related_tables(cursor: sqlite3.Cursor, default_project_id: int):
