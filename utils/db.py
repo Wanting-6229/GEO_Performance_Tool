@@ -746,6 +746,33 @@ def _ensure_postgres_schema_compatibility(cursor):
     _ensure_postgres_column(cursor, "content_publish", "updated_at", "TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP")
 
 
+def _ensure_runtime_schema_compatibility(conn):
+    if getattr(conn, "backend", "") != "postgres":
+        return
+    cursor = conn.cursor()
+    _ensure_postgres_schema_compatibility(cursor)
+    conn.commit()
+
+
+def _get_table_columns(conn, table_name: str) -> set[str]:
+    cursor = conn.cursor()
+    backend = getattr(conn, "backend", "")
+    if backend == "postgres":
+        cursor.execute(
+            """
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = ?
+            """,
+            (table_name,),
+        )
+        return {str(row[0]) for row in cursor.fetchall()}
+
+    cursor.execute(f"PRAGMA table_info({table_name})")
+    return {str(row[1]) for row in cursor.fetchall()}
+
+
 def _ensure_content_publish_table_exists():
     conn = get_connection()
     cursor = conn.cursor()
@@ -1697,12 +1724,37 @@ def get_entity_name_en(project_id: int, entity_name_cn: str) -> str:
 
 def get_all_entity_mappings(project_id: int) -> pd.DataFrame:
     conn = get_connection()
-    df = _read_sql_query("""
-    SELECT entity_name_cn, entity_name_en, sinodis_flag, updated_at
-    FROM entity_mapping
-    WHERE project_id = ?
-    ORDER BY entity_name_cn
-    """, conn, params=[int(project_id)])
+    if getattr(conn, "backend", "") == "postgres":
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = ?
+            """,
+            ("entity_mapping",),
+        )
+        columns = {str(row[0]) for row in cursor.fetchall()}
+        sinodis_select = "sinodis_flag" if "sinodis_flag" in columns else "'N' AS sinodis_flag"
+        updated_at_select = "updated_at" if "updated_at" in columns else "'' AS updated_at"
+        df = _read_sql_query(
+            f"""
+            SELECT entity_name_cn, entity_name_en, {sinodis_select}, {updated_at_select}
+            FROM entity_mapping
+            WHERE project_id = ?
+            ORDER BY entity_name_cn
+            """,
+            conn,
+            params=[int(project_id)],
+        )
+    else:
+        df = _read_sql_query("""
+        SELECT entity_name_cn, entity_name_en, sinodis_flag, updated_at
+        FROM entity_mapping
+        WHERE project_id = ?
+        ORDER BY entity_name_cn
+        """, conn, params=[int(project_id)])
     conn.close()
     return df
 
