@@ -707,6 +707,14 @@ def _create_app_settings_table(cursor):
     """)
 
 
+def _ensure_app_settings_table_exists():
+    conn = get_connection()
+    cursor = conn.cursor()
+    _create_app_settings_table(cursor)
+    conn.commit()
+    conn.close()
+
+
 def _create_content_publish_table(cursor: sqlite3.Cursor):
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS content_publish (
@@ -1468,6 +1476,7 @@ def create_tables():
 # App Settings
 # =========================================================
 def get_app_setting(setting_key: str, default: str = "") -> str:
+    _ensure_app_settings_table_exists()
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute("""
@@ -1482,6 +1491,7 @@ def get_app_setting(setting_key: str, default: str = "") -> str:
 
 
 def set_app_setting(setting_key: str, setting_value: str) -> str:
+    _ensure_app_settings_table_exists()
     normalized_key = normalize_text(setting_key)
     normalized_value = normalize_text(setting_value)
     conn = get_connection()
@@ -1503,6 +1513,7 @@ def set_app_setting(setting_key: str, setting_value: str) -> str:
 
 
 def delete_app_setting(setting_key: str):
+    _ensure_app_settings_table_exists()
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute("DELETE FROM app_settings WHERE setting_key = ?", (normalize_text(setting_key),))
