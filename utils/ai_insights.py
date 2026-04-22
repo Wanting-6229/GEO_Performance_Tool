@@ -204,13 +204,18 @@ def build_ai_insight_prompt(
     )
 
 
-def request_deepseek_insight(prompt: str) -> str:
-    api_key = _clean_text(os.getenv("DEEPSEEK_API_KEY"))
+def request_deepseek_insight(
+    prompt: str,
+    api_key: str = "",
+    base_url: str = "",
+    model: str = "",
+) -> str:
+    api_key = _clean_text(api_key) or _clean_text(os.getenv("DEEPSEEK_API_KEY"))
     if not api_key:
         raise RuntimeError("Missing DEEPSEEK_API_KEY")
 
-    base_url = _clean_text(os.getenv("DEEPSEEK_BASE_URL")) or DEFAULT_DEEPSEEK_BASE_URL
-    model = _clean_text(os.getenv("DEEPSEEK_MODEL")) or DEFAULT_DEEPSEEK_MODEL
+    base_url = _clean_text(base_url) or _clean_text(os.getenv("DEEPSEEK_BASE_URL")) or DEFAULT_DEEPSEEK_BASE_URL
+    model = _clean_text(model) or _clean_text(os.getenv("DEEPSEEK_MODEL")) or DEFAULT_DEEPSEEK_MODEL
     endpoint = f"{base_url.rstrip('/')}/chat/completions"
 
     payload = {

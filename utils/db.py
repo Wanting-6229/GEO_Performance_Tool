@@ -697,6 +697,16 @@ def _create_source_mapping_table(cursor: sqlite3.Cursor):
     """)
 
 
+def _create_app_settings_table(cursor):
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS app_settings (
+        setting_key TEXT PRIMARY KEY,
+        setting_value TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    )
+    """)
+
+
 def _create_content_publish_table(cursor: sqlite3.Cursor):
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS content_publish (
@@ -1105,6 +1115,14 @@ def _create_tables_postgres(cursor):
     """)
 
     cursor.execute("""
+    CREATE TABLE IF NOT EXISTS app_settings (
+        setting_key TEXT PRIMARY KEY,
+        setting_value TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    )
+    """)
+
+    cursor.execute("""
     CREATE TABLE IF NOT EXISTS submission (
         submission_id TEXT PRIMARY KEY,
         project_id BIGINT NOT NULL,
@@ -1216,6 +1234,7 @@ def _migrate_query_related_tables(cursor: sqlite3.Cursor, default_project_id: in
         _create_submission_table(cursor)
         _create_presence_records_table(cursor)
         _create_source_records_table(cursor)
+        _create_app_settings_table(cursor)
         cursor.execute("PRAGMA foreign_keys = ON")
         return
 
@@ -1232,6 +1251,7 @@ def _migrate_query_related_tables(cursor: sqlite3.Cursor, default_project_id: in
     _create_submission_table(cursor)
     _create_presence_records_table(cursor)
     _create_source_records_table(cursor)
+    _create_app_settings_table(cursor)
 
     if _table_exists(cursor, "query_master_legacy"):
         cursor.execute("PRAGMA table_info(query_master_legacy)")
@@ -1437,8 +1457,55 @@ def create_tables():
         default_project_id=default_project_id,
     )
     _create_content_publish_table(cursor)
+    _create_app_settings_table(cursor)
     _ensure_submission_unique_index(cursor)
 
+    conn.commit()
+    conn.close()
+
+
+# =========================================================
+# App Settings
+# =========================================================
+def get_app_setting(setting_key: str, default: str = "") -> str:
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+    SELECT setting_value
+    FROM app_settings
+    WHERE setting_key = ?
+    LIMIT 1
+    """, (normalize_text(setting_key),))
+    row = cursor.fetchone()
+    conn.close()
+    return normalize_text(row[0]) if row else normalize_text(default)
+
+
+def set_app_setting(setting_key: str, setting_value: str) -> str:
+    normalized_key = normalize_text(setting_key)
+    normalized_value = normalize_text(setting_value)
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+    INSERT INTO app_settings (setting_key, setting_value, updated_at)
+    VALUES (?, ?, ?)
+    ON CONFLICT(setting_key) DO UPDATE SET
+        setting_value = excluded.setting_value,
+        updated_at = excluded.updated_at
+    """, (
+        normalized_key,
+        normalized_value,
+        now_ts(),
+    ))
+    conn.commit()
+    conn.close()
+    return normalized_value
+
+
+def delete_app_setting(setting_key: str):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM app_settings WHERE setting_key = ?", (normalize_text(setting_key),))
     conn.commit()
     conn.close()
 

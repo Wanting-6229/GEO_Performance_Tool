@@ -17,6 +17,9 @@ from utils.db import (
     get_project_by_name,
     get_all_content_publish,
     split_publish_months,
+    get_app_setting,
+    set_app_setting,
+    delete_app_setting,
 )
 from utils.loader import (
     load_dashboard_ready_data,
@@ -142,6 +145,51 @@ def clear_all_caches():
     cached_dashboard_data.clear()
 
 
+def render_api_key_settings_panel():
+    stored_api_key = get_app_setting("deepseek_api_key", "")
+    input_key = "settings_deepseek_api_key"
+
+    if input_key not in st.session_state:
+        st.session_state[input_key] = stored_api_key
+
+    chart_card_start("API Key Settings")
+    st.caption("Configure your DeepSeek API key once. It will be saved locally and reused for future AI Insight requests.")
+
+    api_col, action_col, clear_col = st.columns([5.2, 1.2, 1.2], vertical_alignment="bottom")
+
+    with api_col:
+        st.text_input(
+            "DeepSeek API Key",
+            key=input_key,
+            type="password",
+            placeholder="Paste your DeepSeek API key here",
+        )
+
+    with action_col:
+        if st.button("Save Key", use_container_width=True, key="save_deepseek_api_key"):
+            api_key_value = st.session_state.get(input_key, "").strip()
+            if not api_key_value:
+                st.error("Please enter a DeepSeek API key before saving.")
+            else:
+                set_app_setting("deepseek_api_key", api_key_value)
+                st.success("DeepSeek API key saved.")
+
+    with clear_col:
+        if st.button("Clear Key", use_container_width=True, key="clear_deepseek_api_key"):
+            delete_app_setting("deepseek_api_key")
+            st.session_state[input_key] = ""
+            st.success("Saved DeepSeek API key cleared.")
+            st.rerun()
+
+    if stored_api_key:
+        masked_key = f"{stored_api_key[:6]}...{stored_api_key[-4:]}" if len(stored_api_key) > 10 else "Saved"
+        st.caption(f"Saved key detected: {masked_key}")
+    else:
+        st.caption("No DeepSeek API key saved yet.")
+
+    chart_card_end()
+
+
 def _build_dashboard_filter_snapshot(
     query_status_filter: str,
     selected_query_type: str,
@@ -183,9 +231,10 @@ def render_ai_insight_panel(
 ):
     chart_card_start("AI Insight")
 
-    if not os.getenv("DEEPSEEK_API_KEY", "").strip():
+    saved_api_key = get_app_setting("deepseek_api_key", "")
+    if not saved_api_key and not os.getenv("DEEPSEEK_API_KEY", "").strip():
         st.info(
-            "Set `DEEPSEEK_API_KEY` to enable AI-generated insight summaries for the current dashboard filters."
+            "Please save your DeepSeek API key on the home page first, then come back to generate AI insights."
         )
         chart_card_end()
         return
@@ -224,7 +273,7 @@ def render_ai_insight_panel(
                 content_publish_df=content_publish_df,
             )
             with st.spinner("Generating AI insight..."):
-                insight = request_deepseek_insight(prompt)
+                insight = request_deepseek_insight(prompt, api_key=saved_api_key)
             st.session_state[result_key] = insight
             st.session_state[signature_key] = filter_signature
             st.session_state.pop(error_key, None)
@@ -2026,6 +2075,7 @@ def render_projects_page():
         "GNEO-D",
         ""
     )
+    render_api_key_settings_panel()
     clear_all_caches()
 
     projects_df = list_projects()
