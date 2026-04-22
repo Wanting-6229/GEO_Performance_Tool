@@ -242,6 +242,72 @@ def _build_category_brand_summary(presence_df: pd.DataFrame) -> List[Dict[str, A
     return summaries[:8]
 
 
+def _build_category_competition_summary(presence_df: pd.DataFrame) -> List[Dict[str, Any]]:
+    if (
+        presence_df is None
+        or presence_df.empty
+        or "product_category" not in presence_df.columns
+        or "sinodis_flag" not in presence_df.columns
+    ):
+        return []
+
+    df = presence_df.copy()
+    if "brand_display" not in df.columns:
+        if "entity_name_display" in df.columns:
+            df["brand_display"] = df["entity_name_display"]
+        elif "entity_name_en" in df.columns:
+            df["brand_display"] = df["entity_name_en"]
+        elif "entity_name_cn" in df.columns:
+            df["brand_display"] = df["entity_name_cn"]
+        else:
+            df["brand_display"] = ""
+
+    df["product_category"] = df["product_category"].fillna("").astype(str).str.strip()
+    df["brand_display"] = df["brand_display"].fillna("").astype(str).str.strip()
+    df["sinodis_flag"] = df["sinodis_flag"].fillna("N").astype(str).str.strip().str.upper()
+    df = df[(df["product_category"] != "") & (df["brand_display"] != "")]
+    if df.empty:
+        return []
+
+    summaries: List[Dict[str, Any]] = []
+    for category, category_df in df.groupby("product_category"):
+        sinodis_df = category_df[category_df["sinodis_flag"] == "Y"].copy()
+        competitor_df = category_df[category_df["sinodis_flag"] == "N"].copy()
+
+        sinodis_best_position = None
+        if not sinodis_df.empty and "position" in sinodis_df.columns:
+            series = pd.to_numeric(sinodis_df["position"], errors="coerce").dropna()
+            if not series.empty:
+                sinodis_best_position = int(series.min())
+
+        competitor_best_position = None
+        if not competitor_df.empty and "position" in competitor_df.columns:
+            series = pd.to_numeric(competitor_df["position"], errors="coerce").dropna()
+            if not series.empty:
+                competitor_best_position = int(series.min())
+
+        summaries.append(
+            {
+                "product_category": category,
+                "sinodis_brand_count": int(sinodis_df["brand_display"].nunique()) if not sinodis_df.empty else 0,
+                "competitor_brand_count": int(competitor_df["brand_display"].nunique()) if not competitor_df.empty else 0,
+                "sinodis_best_position": sinodis_best_position,
+                "competitor_best_position": competitor_best_position,
+                "competition_intensity": int(competitor_df["brand_display"].nunique()) if not competitor_df.empty else 0,
+            }
+        )
+
+    summaries.sort(
+        key=lambda item: (
+            item["competition_intensity"],
+            item["competitor_brand_count"],
+            -item["sinodis_brand_count"],
+        ),
+        reverse=True,
+    )
+    return summaries[:8]
+
+
 def build_ai_insight_prompt(
     filters: Dict[str, Any],
     payload: Dict[str, Any],
@@ -260,6 +326,7 @@ def build_ai_insight_prompt(
     brand_side_summary = _build_brand_side_summary(presence_df)
     channel_presence_summary = _build_channel_presence_summary(presence_df)
     category_brand_summary = _build_category_brand_summary(presence_df)
+    category_competition_summary = _build_category_competition_summary(presence_df)
 
     context = {
         "filters": filters,
@@ -277,6 +344,7 @@ def build_ai_insight_prompt(
         "brand_side_summary": brand_side_summary,
         "channel_presence_summary": channel_presence_summary,
         "category_brand_summary": category_brand_summary,
+        "category_competition_summary": category_competition_summary,
         "top_brand_ranking": _compact_records(
             brand_ranking_table,
             ["Brand", "Brand Mention", "Avg Position", "Visibility Score"],
@@ -318,11 +386,15 @@ def build_ai_insight_prompt(
         "3. Then provide exactly 3 bullet points in this order: brand presence, channel presence, recommended action.\n"
         "4. Every point must be grounded in the provided data only.\n"
         "5. If filtered data is too limited, say so explicitly and avoid over-claiming.\n"
-        "6. In the brand presence bullet, discuss Sinodis-owned brands versus competitors when brand_side_summary is available.\n"
-        "7. In the brand presence bullet, describe brand performance through the lens of product category whenever category_brand_summary is available.\n"
-        "8. In the channel presence bullet, explicitly state whether MySinodis appeared, and if yes mention its presence level or best position.\n"
-        "9. In the channel presence bullet, use channel_presence_summary first, then top_channel_ranking as support.\n"
-        "10. Keep the total response under 180 words.\n\n"
+        "6. In the brand presence bullet, explicitly identify which Sinodis product categories are performing relatively well.\n"
+        "7. In the brand presence bullet, explicitly identify which product categories show stronger competitive pressure.\n"
+        "8. Use category_brand_summary and category_competition_summary before using overall brand totals.\n"
+        "9. Do not compare Sinodis versus competitors by raw mention volume, because competitor brand counts may be much larger.\n"
+        "10. Prefer position quality, visibility, category-level presence, and competitive breadth over raw mention totals when discussing Sinodis versus competitors.\n"
+        "11. If brand_side_summary is available, you may mention it only as supporting context, not as the main comparison logic.\n"
+        "12. In the channel presence bullet, explicitly state whether MySinodis appeared, and if yes mention its presence level or best position.\n"
+        "13. In the channel presence bullet, use channel_presence_summary first, then top_channel_ranking as support.\n"
+        "14. Keep the total response under 180 words.\n\n"
         f"Dashboard snapshot:\n{json.dumps(context, ensure_ascii=False, indent=2)}"
     )
 
