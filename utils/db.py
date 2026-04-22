@@ -2196,6 +2196,41 @@ def submission_exists(
     return row is not None
 
 
+def get_submission_id(
+    project_id: int,
+    query_number: str,
+    record_month: str,
+    ai_platform: str,
+    check_date: str,
+    created_by: str,
+) -> Optional[str]:
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    SELECT submission_id
+    FROM submission
+    WHERE project_id = ?
+      AND query_number = ?
+      AND record_month = ?
+      AND ai_platform = ?
+      AND check_date = ?
+      AND created_by = ?
+    LIMIT 1
+    """, (
+        int(project_id),
+        normalize_text(query_number),
+        normalize_text(record_month),
+        normalize_text(ai_platform),
+        normalize_text(check_date),
+        normalize_text(created_by),
+    ))
+
+    row = cursor.fetchone()
+    conn.close()
+    return row[0] if row else None
+
+
 def create_submission(
     project_id: int,
     query_number: str,
@@ -2396,6 +2431,191 @@ def insert_source_record(
 
     conn.commit()
     conn.close()
+
+
+def upsert_presence_record(
+    project_id: int,
+    submission_id: str,
+    query_number: str,
+    check_date: str,
+    entity_name_cn: str,
+    entity_name_en: str,
+    position: int,
+) -> str:
+    entity_name_cn = normalize_text(entity_name_cn)
+    entity_name_en = normalize_text(entity_name_en)
+
+    if not entity_name_en and entity_name_cn:
+        entity_name_en = get_entity_name_en(project_id, entity_name_cn)
+
+    if not entity_name_en:
+        raise ValueError(f"Missing English mapping for entity_name_cn: {entity_name_cn}")
+
+    submission_id = normalize_text(submission_id)
+    query_number = normalize_text(query_number)
+    check_date = normalize_text(check_date)
+    position = int(position)
+
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    SELECT id, query_number, check_date, entity_name_en, position
+    FROM presence_records
+    WHERE submission_id = ? AND entity_name_cn = ?
+    LIMIT 1
+    """, (submission_id, entity_name_cn))
+    row = cursor.fetchone()
+
+    if row is None:
+        cursor.execute("""
+        INSERT INTO presence_records (
+            submission_id,
+            query_number,
+            check_date,
+            entity_name_cn,
+            entity_name_en,
+            position
+        )
+        VALUES (?, ?, ?, ?, ?, ?)
+        """, (
+            submission_id,
+            query_number,
+            check_date,
+            entity_name_cn,
+            entity_name_en,
+            position,
+        ))
+        conn.commit()
+        conn.close()
+        return "inserted"
+
+    _, existing_query_number, existing_check_date, existing_entity_name_en, existing_position = row
+    if (
+        normalize_text(existing_query_number) == query_number
+        and normalize_text(existing_check_date) == check_date
+        and normalize_text(existing_entity_name_en) == entity_name_en
+        and int(existing_position) == position
+    ):
+        conn.close()
+        return "skipped"
+
+    cursor.execute("""
+    UPDATE presence_records
+    SET query_number = ?, check_date = ?, entity_name_en = ?, position = ?
+    WHERE submission_id = ? AND entity_name_cn = ?
+    """, (
+        query_number,
+        check_date,
+        entity_name_en,
+        position,
+        submission_id,
+        entity_name_cn,
+    ))
+    conn.commit()
+    conn.close()
+    return "updated"
+
+
+def upsert_source_record(
+    project_id: int,
+    submission_id: str,
+    query_number: str,
+    check_date: str,
+    source_name: str,
+    source_url: str,
+    occurrence_number: int,
+    quoted_or_not: str,
+    quoted_url: str = "",
+) -> str:
+    source_name = normalize_text(source_name)
+    source_url = normalize_text(source_url) or get_source_url(project_id, source_name)
+
+    if not source_url:
+        raise ValueError(f"Missing source_url for source_name: {source_name}")
+
+    submission_id = normalize_text(submission_id)
+    query_number = normalize_text(query_number)
+    check_date = normalize_text(check_date)
+    occurrence_number = int(occurrence_number)
+    quoted_or_not = normalize_yes_no(quoted_or_not)
+    quoted_url = normalize_text(quoted_url)
+
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    SELECT id, query_number, check_date, source_url, occurrence_number, quoted_or_not, quoted_url
+    FROM source_records
+    WHERE submission_id = ? AND source_name = ?
+    LIMIT 1
+    """, (submission_id, source_name))
+    row = cursor.fetchone()
+
+    if row is None:
+        cursor.execute("""
+        INSERT INTO source_records (
+            submission_id,
+            query_number,
+            check_date,
+            source_name,
+            source_url,
+            occurrence_number,
+            quoted_or_not,
+            quoted_url
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            submission_id,
+            query_number,
+            check_date,
+            source_name,
+            source_url,
+            occurrence_number,
+            quoted_or_not,
+            quoted_url,
+        ))
+        conn.commit()
+        conn.close()
+        return "inserted"
+
+    (
+        _,
+        existing_query_number,
+        existing_check_date,
+        existing_source_url,
+        existing_occurrence_number,
+        existing_quoted_or_not,
+        existing_quoted_url,
+    ) = row
+    if (
+        normalize_text(existing_query_number) == query_number
+        and normalize_text(existing_check_date) == check_date
+        and normalize_text(existing_source_url) == source_url
+        and int(existing_occurrence_number) == occurrence_number
+        and normalize_yes_no(existing_quoted_or_not) == quoted_or_not
+        and normalize_text(existing_quoted_url) == quoted_url
+    ):
+        conn.close()
+        return "skipped"
+
+    cursor.execute("""
+    UPDATE source_records
+    SET query_number = ?, check_date = ?, source_url = ?, occurrence_number = ?, quoted_or_not = ?, quoted_url = ?
+    WHERE submission_id = ? AND source_name = ?
+    """, (
+        query_number,
+        check_date,
+        source_url,
+        occurrence_number,
+        quoted_or_not,
+        quoted_url,
+        submission_id,
+        source_name,
+    ))
+    conn.commit()
+    conn.close()
+    return "updated"
 
 
 # =========================================================
@@ -3082,33 +3302,32 @@ def import_monthly_results_excel(uploaded_file, project_id: int):
             (source_df["created_by"] == created_by)
         ]
 
-        if submission_exists(
+        submission_id = get_submission_id(
             project_id=project_id,
             query_number=query_number,
             record_month=record_month,
             ai_platform=ai_platform,
             check_date=check_date,
             created_by=created_by,
-        ):
-            skipped_duplicate_submissions += 1
-            skipped_duplicate_presence += len(p_sub)
-            skipped_duplicate_source += len(s_sub)
-            continue
-
-        submission_id = create_submission(
-            project_id=project_id,
-            query_number=query_number,
-            record_month=record_month,
-            ai_platform=ai_platform,
-            check_date=check_date,
-            created_by=created_by,
-            notes="Imported from Excel",
         )
-        created_submissions += 1
+        created_this_submission = submission_id is None
+        submission_was_updated = False
+
+        if created_this_submission:
+            submission_id = create_submission(
+                project_id=project_id,
+                query_number=query_number,
+                record_month=record_month,
+                ai_platform=ai_platform,
+                check_date=check_date,
+                created_by=created_by,
+                notes="Imported from Excel",
+            )
+            created_submissions += 1
 
         try:
             for _, row in p_sub.iterrows():
-                insert_presence_record(
+                action = upsert_presence_record(
                     project_id=project_id,
                     submission_id=submission_id,
                     query_number=query_number,
@@ -3117,10 +3336,17 @@ def import_monthly_results_excel(uploaded_file, project_id: int):
                     entity_name_en=row["entity_name_en"],
                     position=int(row["position"]),
                 )
-                inserted_presence += 1
+                if action == "inserted":
+                    inserted_presence += 1
+                    submission_was_updated = True
+                elif action == "updated":
+                    updated_presence += 1
+                    submission_was_updated = True
+                else:
+                    skipped_duplicate_presence += 1
 
             for _, row in s_sub.iterrows():
-                insert_source_record(
+                action = upsert_source_record(
                     project_id=project_id,
                     submission_id=submission_id,
                     query_number=query_number,
@@ -3131,11 +3357,36 @@ def import_monthly_results_excel(uploaded_file, project_id: int):
                     quoted_or_not=row["quoted_or_not"],
                     quoted_url=row["quoted_url"],
                 )
-                inserted_source += 1
+                if action == "inserted":
+                    inserted_source += 1
+                    submission_was_updated = True
+                elif action == "updated":
+                    updated_source += 1
+                    submission_was_updated = True
+                else:
+                    skipped_duplicate_source += 1
+
+            if created_this_submission:
+                pass
+            elif submission_was_updated:
+                updated_submissions += 1
+            elif not submission_was_updated:
+                skipped_duplicate_submissions += 1
 
         except Exception:
-            delete_submission(submission_id, project_id=project_id)
+            if created_this_submission and submission_id:
+                delete_submission(submission_id, project_id=project_id)
             raise
+
+    if (
+        created_submissions
+        or inserted_presence
+        or inserted_source
+        or updated_submissions
+        or updated_presence
+        or updated_source
+    ):
+        touch_project(project_id)
 
     return {
         "success": True,
