@@ -24,6 +24,8 @@ DB_NAME = os.path.join(BASE_DIR, "geo_data_v2.db")
 ENTITY_MAPPING_FILE = os.path.join(BASE_DIR, "entity_mapping.xlsx")
 SOURCE_MAPPING_FILE = os.path.join(BASE_DIR, "source_mapping.xlsx")
 CONTENT_PUBLISH_FILE = os.path.join(BASE_DIR, "content_publish.xlsx")
+SUBMISSION_UNIQUE_INDEX_NAME = "uq_submission_business_key"
+_submission_write_lock = Lock()
 
 
 # =========================================================
@@ -746,6 +748,50 @@ def _ensure_postgres_schema_compatibility(cursor):
     _ensure_postgres_column(cursor, "content_publish", "updated_at", "TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP")
 
 
+def _find_duplicate_submission_key(cursor):
+    cursor.execute("""
+    SELECT
+        project_id,
+        query_number,
+        record_month,
+        ai_platform,
+        check_date,
+        created_by,
+        COUNT(*) AS duplicate_count
+    FROM submission
+    GROUP BY
+        project_id,
+        query_number,
+        record_month,
+        ai_platform,
+        check_date,
+        created_by
+    HAVING COUNT(*) > 1
+    LIMIT 1
+    """)
+    return cursor.fetchone()
+
+
+def _ensure_submission_unique_index(cursor):
+    duplicate_row = _find_duplicate_submission_key(cursor)
+    if duplicate_row:
+        print(
+            "[db] skipped submission unique index because duplicate submissions already exist: "
+            f"project_id={duplicate_row[0]} query_number={duplicate_row[1]} record_month={duplicate_row[2]} "
+            f"ai_platform={duplicate_row[3]} check_date={duplicate_row[4]} created_by={duplicate_row[5]} "
+            f"duplicate_count={duplicate_row[6]}",
+            flush=True,
+        )
+        return
+
+    cursor.execute(
+        f"""
+        CREATE UNIQUE INDEX IF NOT EXISTS {SUBMISSION_UNIQUE_INDEX_NAME}
+        ON submission(project_id, query_number, record_month, ai_platform, check_date, created_by)
+        """
+    )
+
+
 def _ensure_runtime_schema_compatibility(conn):
     if getattr(conn, "backend", "") != "postgres":
         return
@@ -1327,6 +1373,7 @@ def create_tables():
 
     if get_db_backend() == "postgres":
         _create_tables_postgres(cursor)
+        _ensure_submission_unique_index(cursor)
         cursor.execute(
             """
             INSERT INTO projects (project_name, status, created_at, updated_at)
@@ -1390,6 +1437,7 @@ def create_tables():
         default_project_id=default_project_id,
     )
     _create_content_publish_table(cursor)
+    _ensure_submission_unique_index(cursor)
 
     conn.commit()
     conn.close()
@@ -2239,45 +2287,109 @@ def create_submission(
     check_date: str,
     created_by: str,
     notes: str = "",
+    reuse_existing: bool = False,
 ) -> str:
-    if submission_exists(project_id, query_number, record_month, ai_platform, check_date, created_by):
-        raise ValueError(
-            "A submission already exists for the same creator under the same "
-            "query / month / platform / check date."
-        )
+    normalized_project_id = int(project_id)
+    normalized_query_number = normalize_text(query_number)
+    normalized_record_month = normalize_text(record_month)
+    normalized_ai_platform = normalize_text(ai_platform)
+    normalized_check_date = normalize_text(check_date)
+    normalized_created_by = normalize_text(created_by)
+    normalized_notes = normalize_text(notes)
 
-    submission_id = generate_submission_id()
+    with _submission_write_lock:
+        conn = get_connection()
+        cursor = conn.cursor()
 
-    conn = get_connection()
-    cursor = conn.cursor()
+        cursor.execute("""
+        SELECT submission_id
+        FROM submission
+        WHERE project_id = ?
+          AND query_number = ?
+          AND record_month = ?
+          AND ai_platform = ?
+          AND check_date = ?
+          AND created_by = ?
+        LIMIT 1
+        """, (
+            normalized_project_id,
+            normalized_query_number,
+            normalized_record_month,
+            normalized_ai_platform,
+            normalized_check_date,
+            normalized_created_by,
+        ))
+        row = cursor.fetchone()
+        if row:
+            conn.close()
+            if reuse_existing:
+                return row[0]
+            raise ValueError(
+                "A submission already exists for the same creator under the same "
+                "query / month / platform / check date."
+            )
 
-    cursor.execute("""
-    INSERT INTO submission (
-        submission_id,
-        project_id,
-        query_number,
-        record_month,
-        ai_platform,
-        check_date,
-        created_by,
-        created_at,
-        notes
-    )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, (
-        submission_id,
-        int(project_id),
-        normalize_text(query_number),
-        normalize_text(record_month),
-        normalize_text(ai_platform),
-        normalize_text(check_date),
-        normalize_text(created_by),
-        now_ts(),
-        normalize_text(notes),
-    ))
+        submission_id = generate_submission_id()
 
-    conn.commit()
-    conn.close()
+        try:
+            cursor.execute("""
+            INSERT INTO submission (
+                submission_id,
+                project_id,
+                query_number,
+                record_month,
+                ai_platform,
+                check_date,
+                created_by,
+                created_at,
+                notes
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                submission_id,
+                normalized_project_id,
+                normalized_query_number,
+                normalized_record_month,
+                normalized_ai_platform,
+                normalized_check_date,
+                normalized_created_by,
+                now_ts(),
+                normalized_notes,
+            ))
+            conn.commit()
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+
+            cursor.execute("""
+            SELECT submission_id
+            FROM submission
+            WHERE project_id = ?
+              AND query_number = ?
+              AND record_month = ?
+              AND ai_platform = ?
+              AND check_date = ?
+              AND created_by = ?
+            LIMIT 1
+            """, (
+                normalized_project_id,
+                normalized_query_number,
+                normalized_record_month,
+                normalized_ai_platform,
+                normalized_check_date,
+                normalized_created_by,
+            ))
+            row = cursor.fetchone()
+            conn.close()
+
+            if row and reuse_existing:
+                return row[0]
+            raise
+
+        conn.close()
+
     touch_project(project_id)
     return submission_id
 
@@ -3322,6 +3434,7 @@ def import_monthly_results_excel(uploaded_file, project_id: int):
                 check_date=check_date,
                 created_by=created_by,
                 notes="Imported from Excel",
+                reuse_existing=True,
             )
             created_submissions += 1
 
@@ -3400,4 +3513,3 @@ def import_monthly_results_excel(uploaded_file, project_id: int):
         "skipped_duplicate_presence_records": skipped_duplicate_presence,
         "skipped_duplicate_source_records": skipped_duplicate_source,
     }
-
