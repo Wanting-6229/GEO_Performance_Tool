@@ -125,6 +125,123 @@ def _build_brand_side_summary(presence_df: pd.DataFrame) -> Dict[str, Any]:
     return result
 
 
+def _build_channel_presence_summary(presence_df: pd.DataFrame) -> Dict[str, Any]:
+    empty_summary = {
+        "channel_query_records": 0,
+        "top_channels": [],
+        "mysinodis_appeared": False,
+        "mysinodis_mentions": 0,
+        "mysinodis_best_position": None,
+    }
+
+    if presence_df is None or presence_df.empty:
+        return empty_summary
+
+    df = presence_df.copy()
+    if "query_type" not in df.columns:
+        return empty_summary
+
+    df = df[
+        df["query_type"].fillna("").astype(str).str.lower().str.contains("channel")
+    ].copy()
+    if df.empty:
+        return empty_summary
+
+    if "brand_display" not in df.columns:
+        if "entity_name_display" in df.columns:
+            df["brand_display"] = df["entity_name_display"]
+        elif "entity_name_en" in df.columns:
+            df["brand_display"] = df["entity_name_en"]
+        elif "entity_name_cn" in df.columns:
+            df["brand_display"] = df["entity_name_cn"]
+        else:
+            df["brand_display"] = ""
+
+    df["brand_display"] = df["brand_display"].fillna("").astype(str).str.strip()
+    top_channels_df = (
+        df[df["brand_display"] != ""]
+        .groupby("brand_display", as_index=False)
+        .agg(
+            **{
+                "channel_mentions": ("brand_display", "count"),
+                "avg_position": ("position", "mean"),
+            }
+        )
+        .sort_values(by=["channel_mentions", "avg_position"], ascending=[False, True])
+        .head(8)
+        .rename(columns={"brand_display": "channel"})
+    )
+    if not top_channels_df.empty and "avg_position" in top_channels_df.columns:
+        top_channels_df["avg_position"] = top_channels_df["avg_position"].round(2)
+
+    mysinodis_mask = df["brand_display"].str.lower() == "mysinodis"
+    mysinodis_mentions = int(mysinodis_mask.sum())
+    mysinodis_best_position = None
+    if mysinodis_mentions > 0 and "position" in df.columns:
+        best_position = pd.to_numeric(df.loc[mysinodis_mask, "position"], errors="coerce").dropna()
+        if not best_position.empty:
+            mysinodis_best_position = int(best_position.min())
+
+    return {
+        "channel_query_records": int(len(df)),
+        "top_channels": top_channels_df.to_dict(orient="records") if not top_channels_df.empty else [],
+        "mysinodis_appeared": mysinodis_mentions > 0,
+        "mysinodis_mentions": mysinodis_mentions,
+        "mysinodis_best_position": mysinodis_best_position,
+    }
+
+
+def _build_category_brand_summary(presence_df: pd.DataFrame) -> List[Dict[str, Any]]:
+    if presence_df is None or presence_df.empty or "product_category" not in presence_df.columns:
+        return []
+
+    df = presence_df.copy()
+    if "brand_display" not in df.columns:
+        if "entity_name_display" in df.columns:
+            df["brand_display"] = df["entity_name_display"]
+        elif "entity_name_en" in df.columns:
+            df["brand_display"] = df["entity_name_en"]
+        elif "entity_name_cn" in df.columns:
+            df["brand_display"] = df["entity_name_cn"]
+        else:
+            df["brand_display"] = ""
+
+    df["product_category"] = df["product_category"].fillna("").astype(str).str.strip()
+    df["brand_display"] = df["brand_display"].fillna("").astype(str).str.strip()
+    df = df[(df["product_category"] != "") & (df["brand_display"] != "")]
+    if df.empty:
+        return []
+
+    summaries: List[Dict[str, Any]] = []
+    for category, category_df in df.groupby("product_category"):
+        top_brands_df = (
+            category_df.groupby("brand_display", as_index=False)
+            .agg(
+                **{
+                    "mentions": ("brand_display", "count"),
+                    "avg_position": ("position", "mean"),
+                }
+            )
+            .sort_values(by=["mentions", "avg_position"], ascending=[False, True])
+            .head(5)
+            .rename(columns={"brand_display": "brand"})
+        )
+        if not top_brands_df.empty and "avg_position" in top_brands_df.columns:
+            top_brands_df["avg_position"] = top_brands_df["avg_position"].round(2)
+
+        summaries.append(
+            {
+                "product_category": category,
+                "brand_mentions": int(len(category_df)),
+                "brand_count": int(category_df["brand_display"].nunique()),
+                "top_brands": top_brands_df.to_dict(orient="records") if not top_brands_df.empty else [],
+            }
+        )
+
+    summaries.sort(key=lambda item: item["brand_mentions"], reverse=True)
+    return summaries[:8]
+
+
 def build_ai_insight_prompt(
     filters: Dict[str, Any],
     payload: Dict[str, Any],
@@ -141,6 +258,8 @@ def build_ai_insight_prompt(
     category_visibility_table = payload.get("brand_visibility_by_category_table", pd.DataFrame())
     record_month_visibility_table = payload.get("brand_visibility_by_record_month_table", pd.DataFrame())
     brand_side_summary = _build_brand_side_summary(presence_df)
+    channel_presence_summary = _build_channel_presence_summary(presence_df)
+    category_brand_summary = _build_category_brand_summary(presence_df)
 
     context = {
         "filters": filters,
@@ -156,6 +275,8 @@ def build_ai_insight_prompt(
             "quote_rate": round(_safe_float(kpis.get("Quote Rate")), 4),
         },
         "brand_side_summary": brand_side_summary,
+        "channel_presence_summary": channel_presence_summary,
+        "category_brand_summary": category_brand_summary,
         "top_brand_ranking": _compact_records(
             brand_ranking_table,
             ["Brand", "Brand Mention", "Avg Position", "Visibility Score"],
@@ -194,12 +315,14 @@ def build_ai_insight_prompt(
         "Requirements:\n"
         "1. Output markdown only.\n"
         "2. Start with a short overview paragraph.\n"
-        "3. Then provide exactly 3 bullet points: Sinodis vs competitor performance, source pattern, and recommended action.\n"
+        "3. Then provide exactly 3 bullet points in this order: brand presence, channel presence, recommended action.\n"
         "4. Every point must be grounded in the provided data only.\n"
         "5. If filtered data is too limited, say so explicitly and avoid over-claiming.\n"
-        "6. Explicitly compare Sinodis-owned brands versus competitor brands whenever brand_side_summary is available.\n"
-        "7. If the current filters already isolate one side only, mention that the comparison is filtered and therefore partial.\n"
-        "8. Keep the total response under 180 words.\n\n"
+        "6. In the brand presence bullet, discuss Sinodis-owned brands versus competitors when brand_side_summary is available.\n"
+        "7. In the brand presence bullet, describe brand performance through the lens of product category whenever category_brand_summary is available.\n"
+        "8. In the channel presence bullet, explicitly state whether MySinodis appeared, and if yes mention its presence level or best position.\n"
+        "9. In the channel presence bullet, use channel_presence_summary first, then top_channel_ranking as support.\n"
+        "10. Keep the total response under 180 words.\n\n"
         f"Dashboard snapshot:\n{json.dumps(context, ensure_ascii=False, indent=2)}"
     )
 
