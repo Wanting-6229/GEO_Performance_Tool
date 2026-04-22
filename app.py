@@ -2,6 +2,7 @@ import os
 import html
 import base64
 import time
+import hashlib
 import pandas as pd
 import streamlit as st
 import utils.db as db_module
@@ -24,6 +25,10 @@ from utils.loader import (
 from utils.forms import (
     render_data_entry_page,
     render_data_record_page,
+)
+from utils.ai_insights import (
+    build_ai_insight_prompt,
+    request_deepseek_insight,
 )
 from utils.charts import (
     build_dashboard_payload,
@@ -135,6 +140,108 @@ def cached_dashboard_data(
 
 def clear_all_caches():
     cached_dashboard_data.clear()
+
+
+def _build_dashboard_filter_snapshot(
+    query_status_filter: str,
+    selected_query_type: str,
+    selected_record_month: str,
+    selected_category: str,
+    selected_platform: str,
+    selected_publish_month: str,
+    selected_query_numbers,
+    selected_creators,
+    selected_sinodis_brand: str,
+    selected_check_date_range,
+):
+    date_range = []
+    if selected_check_date_range and len(selected_check_date_range) == 2:
+        date_range = [str(selected_check_date_range[0]), str(selected_check_date_range[1])]
+
+    return {
+        "query_status": query_status_filter,
+        "query_type": selected_query_type,
+        "record_month": selected_record_month,
+        "product_category": selected_category,
+        "ai_platform": selected_platform,
+        "publish_month": selected_publish_month,
+        "query_numbers": list(selected_query_numbers or []),
+        "created_by": list(selected_creators or []),
+        "sinodis_brand": selected_sinodis_brand,
+        "check_date_range": date_range,
+    }
+
+
+def render_ai_insight_panel(
+    project_id: int,
+    filters: dict,
+    payload: dict,
+    queries_df: pd.DataFrame,
+    presence_df: pd.DataFrame,
+    source_df: pd.DataFrame,
+    content_publish_df: pd.DataFrame,
+):
+    chart_card_start("AI Insight")
+
+    if not os.getenv("DEEPSEEK_API_KEY", "").strip():
+        st.info(
+            "Set `DEEPSEEK_API_KEY` to enable AI-generated insight summaries for the current dashboard filters."
+        )
+        chart_card_end()
+        return
+
+    filter_signature = hashlib.md5(
+        (
+            f"{project_id}|"
+            f"{filters}|"
+            f"{len(queries_df)}|{len(presence_df)}|{len(source_df)}|{len(content_publish_df)}"
+        ).encode("utf-8")
+    ).hexdigest()
+    result_key = f"ai_insight_result_{project_id}"
+    signature_key = f"ai_insight_signature_{project_id}"
+    error_key = f"ai_insight_error_{project_id}"
+
+    action_col, meta_col = st.columns([1.2, 3.8])
+    with action_col:
+        generate_clicked = st.button(
+            "Generate Insight",
+            use_container_width=True,
+            key=f"generate_ai_insight_{project_id}",
+        )
+    with meta_col:
+        st.caption(
+            "Uses the currently selected filters and visible dashboard aggregates to produce a short summary."
+        )
+
+    if generate_clicked:
+        try:
+            prompt = build_ai_insight_prompt(
+                filters=filters,
+                payload=payload,
+                presence_df=presence_df,
+                source_df=source_df,
+                queries_df=queries_df,
+                content_publish_df=content_publish_df,
+            )
+            with st.spinner("Generating AI insight..."):
+                insight = request_deepseek_insight(prompt)
+            st.session_state[result_key] = insight
+            st.session_state[signature_key] = filter_signature
+            st.session_state.pop(error_key, None)
+        except Exception as exc:
+            st.session_state[error_key] = str(exc)
+            st.session_state.pop(result_key, None)
+            st.session_state.pop(signature_key, None)
+
+    if st.session_state.get(error_key):
+        st.error(st.session_state[error_key])
+
+    if st.session_state.get(signature_key) == filter_signature and st.session_state.get(result_key):
+        st.markdown(st.session_state[result_key])
+    else:
+        st.caption("No AI summary generated for the current filter set yet.")
+
+    chart_card_end()
 
 
 # =========================================================
@@ -1916,8 +2023,8 @@ def _build_average_dashboard_payload(
 # =========================================================
 def render_projects_page():
     render_hero(
-        "Project List",
-        "Create a project or enter an existing workspace to view its Dashboard, Data Entry, and Data Record."
+        "GNEO-D",
+        ""
     )
     clear_all_caches()
 
@@ -2266,6 +2373,29 @@ def render_dashboard():
         render_kpi_card("Source Occurance", f"{kpis['source occurance']}")
     with k3:
         render_kpi_card("Quote Rate", f"{kpis['Quote Rate']}")
+
+    current_filter_snapshot = _build_dashboard_filter_snapshot(
+        query_status_filter=query_status_filter,
+        selected_query_type=selected_query_type,
+        selected_record_month=selected_record_month,
+        selected_category=selected_category,
+        selected_platform=selected_platform,
+        selected_publish_month=selected_publish_month,
+        selected_query_numbers=selected_query_numbers,
+        selected_creators=selected_creators,
+        selected_sinodis_brand=selected_sinodis_brand,
+        selected_check_date_range=selected_check_date_range,
+    )
+
+    render_ai_insight_panel(
+        project_id=int(project["project_id"]),
+        filters=current_filter_snapshot,
+        payload=payload,
+        queries_df=queries_filtered,
+        presence_df=presence_filtered,
+        source_df=source_filtered,
+        content_publish_df=content_publish_filtered,
+    )
 
     visibility_ranking_title = (
         "Brand Visibility Ranking"
