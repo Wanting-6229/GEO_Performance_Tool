@@ -2529,6 +2529,19 @@ def bulk_delete_submissions(submission_ids: List[str], project_id: int):
     touch_project(project_id)
 
 
+def clear_submission_records(submission_id: str):
+    submission_id = normalize_text(submission_id)
+    if not submission_id:
+        return
+
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM presence_records WHERE submission_id = ?", (submission_id,))
+    cursor.execute("DELETE FROM source_records WHERE submission_id = ?", (submission_id,))
+    conn.commit()
+    conn.close()
+
+
 # =========================================================
 # Presence / Source Record Inserts
 # =========================================================
@@ -3515,6 +3528,11 @@ def import_monthly_results_excel(uploaded_file, project_id: int):
                 reuse_existing=True,
             )
             created_submissions += 1
+        else:
+            # Excel uploads are treated as the full contents for a submission.
+            # When the submission already exists, replace its old detail rows.
+            clear_submission_records(submission_id)
+            updated_submissions += 1
 
         try:
             for _, row in p_sub.iterrows():
@@ -3556,13 +3574,6 @@ def import_monthly_results_excel(uploaded_file, project_id: int):
                     submission_was_updated = True
                 else:
                     skipped_duplicate_source += 1
-
-            if created_this_submission:
-                pass
-            elif submission_was_updated:
-                updated_submissions += 1
-            elif not submission_was_updated:
-                skipped_duplicate_submissions += 1
 
         except Exception:
             if created_this_submission and submission_id:
